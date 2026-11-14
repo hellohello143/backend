@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="315" viewBox="0 0 1200 315" role="img" aria-labelledby="title desc">
+  <title id="title">Kuma Capture</title>
+  <desc id="desc">A honey-brown bear with pink ears beside the name Kuma Capture, on a cream background.</desc>
+  <defs>
+    <linearGradient id="cream" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#fff8ea"/>
+      <stop offset="1" stop-color="#f9ddcb"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="1196" height="311" rx="35" fill="url(#cream)" stroke="#e4b999" stroke-width="4"/>
+  <circle cx="958" cy="157" r="111" fill="#f8cdd0"/>
+  <circle cx="878" cy="98" r="36" fill="#b9734e"/>
+  <circle cx="1038" cy="98" r="36" fill="#b9734e"/>
+  <circle cx="878" cy="98" r="22" fill="#ffd2d5"/>
+  <circle cx="1038" cy="98" r="22" fill="#ffd2d5"/>
+  <ellipse cx="958" cy="158" rx="105" ry="78" fill="#b9734e"/>
+  <ellipse cx="958" cy="182" rx="39" ry="29" fill="#fff1d9"/>
+  <ellipse cx="919" cy="148" rx="8" ry="10" fill="#57362b"/>
+  <ellipse cx="997" cy="148" rx="8" ry="10" fill="#57362b"/>
+  <ellipse cx="958" cy="172" rx="11" ry="7" fill="#57362b"/>
+  <path d="M958 176v8m0 0-11 8m11-8 11 8" fill="none" stroke="#57362b" stroke-linecap="round" stroke-width="4"/>
+  <g fill="#a85e49">
+    <path d="M792 82q4 19 22 22-18 4-22 22-4-18-22-22 18-3 22-22Z"/>
+    <path d="M1109 190q3 13 16 16-13 3-16 16-3-13-16-16 13-3 16-16Z"/>
+    <circle cx="808" cy="222" r="5"/>
+    <circle cx="1095" cy="87" r="5"/>
+  </g>
+  <text x="82" y="151" fill="#57362b" font-family="Verdana, sans-serif" font-size="75" font-weight="700">Kuma Capture</text>
+  <text x="86" y="205" fill="#744a40" font-family="Verdana, sans-serif" font-size="28">Screenshots, instant replay &amp; recording</text>
+</svg>
