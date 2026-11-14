@@ -1,51 +1,73 @@
 <p align="center">
-  <img src="docs/kuma-banner.svg" width="100%" alt="Kuma Capture — Screenshots, instant replay and recording">
+  <img src="docs/kuma-banner.svg" width="100%" alt="Kuma Capture, with a honey-brown bear on a cream and strawberry-pink background">
 </p>
 
 <h1 align="center">Kuma Capture</h1>
 
 <p align="center">
-  A cozy capture app for Windows 11 x64, built in Rust.
+  <strong>Screenshot it. Clip the last 30 seconds. Keep recording.</strong><br>
+  A cozy, tray-first capture app for Windows 11, built in Rust.
 </p>
 
 <p align="center">
-  <a href="#try-the-windows-build">Try the Windows build</a> ·
-  <a href="docs/TESTER.md">Tester checklist</a> ·
-  <a href="#build-from-source">Build from source</a>
+  <a href="../../releases"><strong>Windows builds</strong></a> ·
+  <a href="#quick-start"><strong>Quick start</strong></a> ·
+  <a href="docs/TESTER.md"><strong>Tester checklist</strong></a> ·
+  <a href="#build-from-source"><strong>Build from source</strong></a>
 </p>
 
-## Try the Windows build
+<p align="center">
+  <img alt="Windows 11 x64" src="https://img.shields.io/badge/Windows%2011-x64-9e5b38">
+  <img alt="Built in Rust" src="https://img.shields.io/badge/Built%20in-Rust-b9734e">
+  <img alt="GPL 3.0 or later" src="https://img.shields.io/badge/License-GPL--3.0%2B-c86e80">
+</p>
 
-**v0.1.0 is an unsigned tester build.** Start with the bundled installer on a clean Windows PC. It includes the OBS capture runtime, rclone, and the Microsoft Visual C++ redistributable.
+## For the moments you almost missed
 
-| Download | How to run it |
+**Instant replay.** Arm a rolling buffer and save the last 15, 30, 60, or 120 seconds with a hotkey. Save another clip whenever you want. The buffer keeps running.
+
+**Screenshots your way.** Grab a region, a window, a monitor, or the entire desktop. Save as PNG or JPEG, include the cursor, or send the image straight to your clipboard.
+
+**Full-monitor recording.** Pick a display and record an MP4. Choose your resolution, frame rate, and encoder, with separate controls for system audio and your microphone.
+
+**Files that sort themselves.** Give screenshots, clips, and recordings their own folders. Add date folders or a filename template, and preview the resulting path before saving.
+
+**Storage that follows your workflow.** Keep everything local, use a synced folder or network share, or add destinations for Google Drive, OneDrive, Dropbox, S3-compatible buckets, WebDAV, SFTP, or custom HTTPS PUT. Automatic uploads are optional and run after the local save.
+
+**A little softer around the edges.** The warm bear theme runs from the custom title bar to the tray icon. Settings are grouped by task, with fine-tuning tucked behind **Advanced**.
+
+## Get Kuma Capture
+
+Look for these files under [GitHub Releases](../../releases) when a build is published.
+
+| Package | How to run it |
 | --- | --- |
-| **Windows installer** | Run `KumaCaptureSetup.exe`, then open **Kuma Capture** from Start. |
-| **Portable ZIP** | Extract the whole ZIP into a writable folder and run `KumaCapture.exe`. The portable build needs the Visual C++ x64 runtime. |
+| **`KumaCaptureSetup.exe`** | Recommended on a clean PC. Run the installer, then open Kuma Capture from Start. The installer bundles OBS, rclone, and the Microsoft Visual C++ runtime. |
+| **`KumaCapture-Windows-x64.zip`** | Extract the whole ZIP to a writable folder, then run `KumaCapture.exe`. The portable package requires the Microsoft Visual C++ x64 runtime. |
 
-Check [GitHub Releases](../../releases) for published builds, or use the source instructions below.
+> **v0.1.0 tester build** · The Windows x64 build and four automated tests passed. Fullscreen hotkeys, audio sync, multi-monitor behavior, and live uploads still need hands-on Windows testing. The tester build is unsigned.
 
-## Capture what just happened
+## Quick start
 
-1. Pick your monitor under **Settings → Clips & Recording**.
-2. Choose **Arm replay** on the Capture screen or in the system tray. The default buffer is 30 seconds.
-3. Press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>5</kbd> to save the recent footage. Replay keeps running after the clip is saved.
+1. Pick a monitor under **Settings → Clips & Recording**.
+2. Choose **Arm replay** in the app or tray. The default buffer is 30 seconds.
+3. Press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>5</kbd> to save a clip. Find it in **History**.
 
-Video always captures the entire selected monitor. Screenshots can capture a region, an active window, one monitor, or the entire desktop.
-
-| Feature | What you can control |
+| Default shortcut | Action |
 | --- | --- |
-| **Screenshots** | PNG or JPEG, JPEG quality, cursor, clipboard actions, and global shortcuts. |
-| **Replay and recording** | Buffer length, resolution, FPS, encoder settings, and separate system audio and microphone controls. |
-| **Files and folders** | Separate save paths, filename templates, date folders, and a path preview. |
-| **Optional uploads** | Named destinations for Google Drive, OneDrive, Dropbox, S3-compatible buckets, WebDAV, SFTP, and custom HTTPS PUT. Uploads are off by default. |
-| **Desktop UI** | A custom title bar, tray controls, and settings categories with collapsible Advanced options. |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> | Region screenshot |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>2</kbd> | Active window screenshot |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>3</kbd> | Monitor screenshot |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>4</kbd> | Screenshot all displays |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>5</kbd> | Save replay clip |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>6</kbd> | Arm or stop replay |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>7</kbd> | Start or stop recording |
 
-To connect storage, open **Settings → Uploads → Set up storage…**, then refresh connections and add a destination profile. Captures are saved locally before any upload.
+Shortcuts are editable under **Settings → Hotkeys**. Clips and recordings always include the whole selected monitor, including anything visible when switching apps. The microphone starts off.
 
 ## Build from source
 
-On Windows, install Rust 1.100.0, the MSVC build tools, Python 3.12 or later, and NSIS 3.11 or later. From the repository root:
+Install Rust 1.100.0, the MSVC build tools, Python 3.12 or newer, and NSIS 3.11 or newer on Windows. Run these commands from the repository root.
 
 ```powershell
 cargo test --locked
@@ -53,10 +75,8 @@ cargo build --release --locked
 python packaging/package.py --exe target/release/kuma-capture.exe --nsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
 ```
 
-The packager verifies pinned dependencies and writes the installer, portable ZIP, and SHA-256 checksums to `dist/`. See the [Windows workflow](.github/workflows/windows.yml) for the CI build.
+The packager verifies dependency checksums and writes the installer, portable ZIP, and SHA-256 checksums to `dist/`. See the [Windows CI workflow](.github/workflows/windows.yml).
 
-## Project status
+## Credits and license
 
-The Windows x64 cross-build and four automated tests passed. Fullscreen hotkeys, multi-monitor capture, audio sync, Snap Layouts, and live uploads still need hands-on Windows testing. Start with the [tester checklist](docs/TESTER.md) when reporting a problem.
-
-Kuma uses a ShareX-derived screenshot implementation, bundled OBS, and rclone. Separate upstream forks, ShareX `.sxcu` import, video thumbnails, and public-link creation are pending. See the [third-party notes](docs/THIRD-PARTY.md) and [GPL-3.0-or-later license](LICENSE).
+Kuma Capture uses a [ShareX](https://github.com/ShareX/ShareX)-derived screenshot workflow, bundled [OBS Studio](https://github.com/obsproject/obs-studio) for video, and [rclone](https://rclone.org/) for storage. The bear artwork is original to the project. See the [third-party notes](docs/THIRD-PARTY.md) and [GPL-3.0-or-later license](LICENSE).
