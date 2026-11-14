@@ -1217,14 +1217,33 @@ impl App {
         if let Some(input) = input {
             self.hotkey_recorder = None;
             let previous = self.settings.hotkeys[index].clone();
+            let mut conflict = None;
             if let shortcut::Input::Chord(chord) = input {
-                self.settings.hotkeys[index] = chord;
+                if let Ok(proposed) = chord.parse::<HotKey>() {
+                    conflict =
+                        self.settings
+                            .hotkeys
+                            .iter()
+                            .enumerate()
+                            .find_map(|(other, binding)| {
+                                let same = binding
+                                    .parse::<HotKey>()
+                                    .is_ok_and(|existing| existing.id() == proposed.id());
+                                (other != index && same)
+                                    .then(|| format!("Already assigned to {}.", ACTIONS[other]))
+                            });
+                    if conflict.is_none() {
+                        self.settings.hotkeys[index] = chord;
+                    }
+                }
             }
             self.register_hotkeys();
             if !self.hotkey_errors[index].is_empty() && self.settings.hotkeys[index] != previous {
-                let error = self.hotkey_errors[index].clone();
+                conflict = Some(self.hotkey_errors[index].clone());
                 self.settings.hotkeys[index] = previous;
                 self.register_hotkeys();
+            }
+            if let Some(error) = conflict {
                 self.hotkey_errors[index] = error;
             }
             while GlobalHotKeyEvent::receiver().try_recv().is_ok() {}
