@@ -1,0 +1,27 @@
+[package]
+name = "kuma-capture"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+arboard = "3"
+base64 = "0.22"
+eframe = { version = "0.31", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+global-hotkey = "0.7"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rand = "0.8"
+rfd = "0.15"
+sha2 = "0.10"
+tray-icon = "0.20"
+tungstenite = "0.26"
+ureq = { version = "2.12", features = ["json"] }
+xsalsa20poly1305 = "0.9"
+raw-window-handle = "0.6"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Dwm", "Win32_System_Memory", "Win32_UI_Shell"] }
