@@ -26,8 +26,8 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 use windows_sys::Win32::{
-    Foundation::HWND,
-    System::Threading::{CreateMutexW, GetCurrentProcessId},
+    Foundation::{HANDLE, WAIT_OBJECT_0},
+    System::Threading::{CreateEventW, CreateMutexW, GetCurrentProcessId, WaitForSingleObject},
     UI::WindowsAndMessaging::GetWindowThreadProcessId,
 };
 
@@ -110,7 +110,7 @@ struct CaptureStatus {
 
 enum Report {
     Saved(Media, Option<String>),
-    Snip(Result<Option<desktop::Selection>, String>, Settings),
+    Captured(Result<Option<RgbaImage>, String>, Settings, String),
     Status(CaptureStatus),
     Done(Result<(), String>),
     Upload(PathBuf, String, Result<String, String>),
@@ -307,6 +307,8 @@ struct App {
     quit: bool,
     theme: Option<bool>,
     window_maximized: bool,
+    update_exit: HANDLE,
+    update_requested: bool,
 }
 
 impl App {
@@ -367,6 +369,14 @@ impl App {
             quit: false,
             theme: None,
             window_maximized: false,
+            update_exit: unsafe {
+                let name: Vec<_> = "Local\\KumaCaptureUpdateExit"
+                    .encode_utf16()
+                    .chain([0])
+                    .collect();
+                CreateEventW(std::ptr::null(), 0, 0, name.as_ptr())
+            },
+            update_requested: false,
         };
         app.register_hotkeys();
         app
@@ -469,17 +479,10 @@ impl App {
     fn collect_reports(&mut self, ctx: &egui::Context) {
         while let Ok(report) = self.reports.try_recv() {
             match report {
-                Report::Snip(result, mut settings) => {
+                Report::Captured(result, settings, label) => {
                     self.snipping = false;
                     match result {
-                        Ok(Some(selection)) => {
-                            settings.copy_screenshot = selection.copy_image;
-                            self.send(Work::Screenshot(
-                                selection.image,
-                                selection.label.into(),
-                                settings,
-                            ));
-                        }
+                        Ok(Some(image)) => self.send(Work::Screenshot(image, label, settings)),
                         Ok(None) => {}
                         Err(error) => self.notice(error, true),
                     }
@@ -576,33 +579,53 @@ impl App {
             4 => self.send(Work::SaveReplay(settings)),
             5 => self.send(Work::Replay(settings)),
             6 => self.send(Work::Recording(settings)),
-            0 => {
+            0..=3 => {
+                let target = match action {
+                    0 => Ok(("region", String::new(), "Region".into())),
+                    1 => {
+                        let window = if self.previous_window == 0 {
+                            capture::foreground() as usize
+                        } else {
+                            self.previous_window
+                        };
+                        Ok(("window", window.to_string(), "Window".into()))
+                    }
+                    2 => capture::selected_display(&settings.monitor).map(|display| {
+                        let r = display.rect;
+                        (
+                            "monitor",
+                            format!(
+                                "{},{},{},{}",
+                                r.left,
+                                r.top,
+                                r.right - r.left,
+                                r.bottom - r.top
+                            ),
+                            display.label,
+                        )
+                    }),
+                    _ => Ok(("desktop", String::new(), "Desktop".into())),
+                };
+                let (mode, bounds, label) = match target {
+                    Ok(target) => target,
+                    Err(error) => {
+                        self.notice(error.to_string(), true);
+                        return;
+                    }
+                };
                 self.snipping = true;
                 desktop::dismiss_preview();
                 let tx = self.report_sender.clone();
                 let ctx = ctx.clone();
+                let root = self.root.clone();
+                let data = self.data.clone();
                 thread::spawn(move || {
-                    let result = desktop::snip(settings.cursor, settings.copy_screenshot)
-                        .map_err(|error| error.to_string());
-                    let _ = tx.send(Report::Snip(result, settings));
+                    let result =
+                        crate::sharex::capture(&root, &data, mode, bounds, settings.cursor)
+                            .map_err(|error| format!("{error:#}"));
+                    let _ = tx.send(Report::Captured(result, settings, label));
                     ctx.request_repaint();
                 });
-            }
-            1..=3 => {
-                desktop::dismiss_preview();
-                let result = match action {
-                    1 => capture::active_window(self.previous_window as HWND)
-                        .map(|rect| (rect, "Window".into())),
-                    2 => capture::selected_display(&settings.monitor)
-                        .map(|display| (display.rect, display.label)),
-                    _ => Ok((capture::virtual_desktop(), "Desktop".into())),
-                };
-                match result
-                    .and_then(|(rect, label)| Ok((capture::screen(rect, settings.cursor)?, label)))
-                {
-                    Ok((image, label)) => self.send(Work::Screenshot(image, label, settings)),
-                    Err(error) => self.notice(error.to_string(), true),
-                }
             }
             _ => {}
         }
@@ -655,7 +678,7 @@ impl App {
     }
 
     fn request_quit(&mut self, ctx: &egui::Context) {
-        if self.status.recording.is_some() || self.busy {
+        if self.status.recording.is_some() || self.busy || self.snipping {
             self.notice("Finish saving or stop the recording before quitting.", true);
             self.open(ctx);
         } else {
@@ -1002,8 +1025,17 @@ impl App {
                                     );
                                     ui.separator();
                                     ui.label(format!("Kuma Capture {}", env!("CARGO_PKG_VERSION")));
+                                    if ui.button("Check for updates").clicked() {
+                                        let path = self.root.join("KumaCaptureUpdater.exe");
+                                        if let Err(error) = Command::new(path).spawn() {
+                                            self.notice(
+                                                format!("Could not open the updater: {error}"),
+                                                true,
+                                            );
+                                        }
+                                    }
                                     ui.hyperlink_to(
-                                        "Check for updates on GitHub",
+                                        "GitHub Releases",
                                         "https://github.com/hellohello143/backend/releases",
                                     );
                                 }
@@ -1571,6 +1603,9 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        if !self.update_exit.is_null() {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.update_exit) };
+        }
         let _ = self.work.send(Work::Quit);
         if let Some(worker) = self.worker_thread.take() {
             let _ = worker.join();
@@ -1587,6 +1622,20 @@ impl eframe::App for App {
         }
         self.inputs(ctx);
         self.collect_reports(ctx);
+        if !self.update_exit.is_null()
+            && unsafe { WaitForSingleObject(self.update_exit, 0) } == WAIT_OBJECT_0
+        {
+            self.update_requested = true;
+        }
+        if self.update_requested
+            && !self.busy
+            && !self.snipping
+            && self.status.recording.is_none()
+            && self.upload_active.is_empty()
+        {
+            self.request_quit(ctx);
+            return;
+        }
         let recording_shortcut = self.hotkey_recorder.is_some();
         if ctx.input(|input| input.viewport().close_requested()) && !self.quit {
             if self.settings.close_to_tray && self.tray.is_some() {

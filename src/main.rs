@@ -12,6 +12,8 @@ mod model;
 #[cfg(windows)]
 mod obs;
 #[cfg(windows)]
+mod sharex;
+#[cfg(windows)]
 mod shortcut;
 #[cfg(windows)]
 mod uploads;

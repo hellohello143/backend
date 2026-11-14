@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="ShareX.Avalonia" HintPath="$(ShareXRuntime)/ShareX.Avalonia.dll" Private="false" />
+    <Reference Include="ShareX.HelpersLib" HintPath="$(ShareXRuntime)/ShareX.HelpersLib.dll" Private="false" />
+    <Reference Include="ShareX.ScreenCaptureLib" HintPath="$(ShareXRuntime)/ShareX.ScreenCaptureLib.dll" Private="false" />
+    <Reference Include="ShareX.ImageEditor" HintPath="$(ShareXRuntime)/ShareX.ImageEditor.dll" Private="false" />
+    <Reference Include="SkiaSharp" HintPath="$(ShareXRuntime)/SkiaSharp.dll" Private="false" />
+  </ItemGroup>
+</Project>

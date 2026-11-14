@@ -9,6 +9,11 @@
     "url": "https://github.com/rclone/rclone/releases/download/v1.76.0/rclone-v1.76.0-windows-amd64.zip",
     "sha256": "8b4fd2737ade4e70c057ef4a49deb7cffe94b0fb9d7587c189d149823f21a1dc"
   },
+  "sharex": {
+    "file": "sharex.zip",
+    "url": "https://github.com/ShareX/ShareX/releases/download/v22.4.0/ShareX-22.4.0-portable-x64.zip",
+    "sha256": "c321ed353a6c6ae32093927f97c22e0f0627628ce6fa47ed366bcefd05936c7b"
+  },
   "vc": {
     "file": "vc-redist.exe",
     "url": "https://download.visualstudio.microsoft.com/download/pr/78d061c5-9ef3-42ab-98ed-3309d1095dc4/9C02C9ED120F671B900E6B9471D890E3B2414117A7E53F4AE2E855466FA2B7C9/VC_redist.x64.exe",

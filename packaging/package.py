@@ -45,6 +45,9 @@ def write_zip(stage, dest):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", required=True, type=Path)
+    parser.add_argument("--updater", required=True, type=Path)
+    parser.add_argument("--dotnet", default="dotnet")
+    parser.add_argument("--bridge", type=Path, help="Use an already compiled ShareX bridge")
     parser.add_argument("--cache", type=Path, default=ROOT / ".package-cache")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--nsis", default="makensis")
@@ -57,6 +60,29 @@ def main():
         shutil.rmtree(stage)
     stage.mkdir()
     shutil.copy2(args.exe, stage / "KumaCapture.exe")
+    updater = output / "KumaCaptureUpdater.exe"
+    shutil.copy2(args.updater, updater)
+    shutil.copy2(updater, stage / updater.name)
+    sharex = stage / "sharex"
+    with ZipFile(dependency("sharex", cache)) as bundle:
+        bundle.extractall(sharex)
+    bridge = sharex / "KumaShareX.dll"
+    if args.bridge:
+        shutil.copy2(args.bridge, bridge)
+    else:
+        subprocess.run([args.dotnet, "build", str(ROOT / "bridges" / "sharex" / "KumaShareX.csproj"),
+                        "--configuration", "Release", "--output", str(output / "bridge-build"),
+                        f"-p:ShareXRuntime={sharex}"], check=True)
+        shutil.copy2(output / "bridge-build" / bridge.name, bridge)
+    version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+    if os.name == "nt":
+        probe = output / "sharex-probe.txt"
+        probe.unlink(missing_ok=True)
+        env = os.environ | {"DOTNET_STARTUP_HOOKS": str(bridge), "KUMA_SHAREX_OUTPUT": str(probe), "KUMA_SHAREX_MODE": "probe"}
+        subprocess.run([str(sharex / "ShareX.exe")], cwd=sharex, env=env, check=True, timeout=35)
+        if probe.read_text(encoding="utf-8") != "22.4.0":
+            raise RuntimeError("ShareX startup hook did not load the pinned capture assembly.")
+
     with ZipFile(dependency("obs", cache)) as bundle:
         bundle.extractall(stage / "obs")
     with ZipFile(dependency("rclone", cache)) as bundle:
@@ -76,12 +102,14 @@ def main():
         "VCREDIST": stage / "VC_redist.x64.exe",
         "PAYLOAD": stage / "*",
         "DEST": setup,
-        "VERSION": tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"],
+        "VERSION": version,
     }
     command = [args.nsis, *(f"{define}{key}={value}" for key, value in definitions.items())]
     subprocess.run([*command, str(ROOT / "packaging" / "setup.nsi")], check=True)
     checksum = output / "SHA256SUMS.txt"
-    checksum.write_text("".join(f"{digest(path)}  {path.name}\n" for path in (setup, portable)), encoding="ascii")
+    manifest = output / "KumaCaptureUpdate.json"
+    manifest.write_text(json.dumps({"version": version, "installer": setup.name, "sha256": digest(setup)}) + "\n", encoding="ascii")
+    checksum.write_text("".join(f"{digest(path)}  {path.name}\n" for path in (setup, portable, updater, manifest)), encoding="ascii")
 
 
 if __name__ == "__main__":

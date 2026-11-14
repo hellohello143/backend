@@ -54,7 +54,7 @@ Section "Kuma Capture"
             SetRebootFlag true
         ${ElseIf} $0 != 0
         ${AndIf} $0 != 1638
-            MessageBox MB_ICONEXCLAMATION "The Microsoft C++ runtime did not install (code $0). If video capture fails to start, run the included runtime installer from the application folder."
+            MessageBox MB_ICONEXCLAMATION "The Microsoft C++ runtime did not install (code $0). If video capture fails to start, run the included runtime installer from the application folder." /SD IDOK
             SetOutPath "$INSTDIR"
             File /oname=VC_redist.x64.exe "${VCREDIST}"
         ${EndIf}
@@ -63,6 +63,7 @@ Section "Kuma Capture"
     File /r /x VC_redist.x64.exe "${PAYLOAD}"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     CreateShortcut "$SMPROGRAMS\Kuma Capture.lnk" "$INSTDIR\KumaCapture.exe"
+    CreateShortcut "$SMPROGRAMS\Kuma Capture Updater.lnk" "$INSTDIR\KumaCaptureUpdater.exe"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "DisplayName" "Kuma Capture"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "DisplayVersion" "${VERSION}"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "InstallLocation" "$INSTDIR"
@@ -72,8 +73,11 @@ SectionEnd
 Section "Uninstall"
     SetRegView 64
     Delete "$SMPROGRAMS\Kuma Capture.lnk"
+    Delete "$SMPROGRAMS\Kuma Capture Updater.lnk"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture"
     Delete "$INSTDIR\KumaCapture.exe"
+    Delete "$INSTDIR\KumaCaptureUpdater.exe"
+    RMDir /r "$INSTDIR\sharex"
     Delete "$INSTDIR\VC_redist.x64.exe"
     Delete "$INSTDIR\Uninstall.exe"
     Delete "$INSTDIR\TESTER.md"

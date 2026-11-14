@@ -1,3 +1,6 @@
 /target/
 /dist/
 /.package-cache/
+
+/bridges/sharex/bin/
+/bridges/sharex/obj/

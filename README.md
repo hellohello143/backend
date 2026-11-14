@@ -26,7 +26,7 @@
 
 **Instant replay.** Arm a rolling buffer and save the last 15, 30, 60, or 120 seconds with a hotkey. Save another clip whenever you want. The buffer keeps running.
 
-**Screenshots your way.** A crosshair overlay and top toolbar let you snip a rectangle, a window, a monitor, or all screens. Save as PNG or JPEG, copy to the clipboard, and get a bottom-right preview and a soft chime. The preview and chime have separate toggles.
+**Screenshots powered by ShareX.** Region capture opens ShareX’s own snipping window with its selection and annotation tools. Window, monitor, and desktop screenshots use ShareX’s engine too. Kuma still handles the output format, clipboard, preview, and chime.
 
 **Full-monitor recording.** Pick a display and record an MP4. Choose your resolution, frame rate, and encoder, with separate controls for system audio and your microphone.
 
@@ -45,11 +45,11 @@ Look for these files under [GitHub Releases](../../releases) when a build is pub
 | **`KumaCaptureSetup.exe`** | Recommended on a clean PC. Run the installer, then open Kuma Capture from Start. The installer bundles OBS, rclone, and the Microsoft Visual C++ runtime. |
 | **`KumaCapture-Windows-x64.zip`** | Extract the whole ZIP to a writable folder, then run `KumaCapture.exe`. The portable package requires the Microsoft Visual C++ x64 runtime. |
 
-> **v0.1.0 tester build** · The Windows x64 build and four automated tests passed. Fullscreen hotkeys, audio sync, multi-monitor behavior, and live uploads still need hands-on Windows testing. The tester build is unsigned.
+> **Tester builds** · These Windows builds are unsigned. See the release checklist for hands-on verification.ndows x64 build and four automated tests passed. Fullscreen hotkeys, audio sync, multi-monitor behavior, and live uploads still need hands-on Windows testing. The tester build is unsigned.
 
 ### Updating an existing installation
 
-Quit Kuma Capture from its system tray menu, then run the new `KumaCaptureSetup.exe`. Setup finds your existing installation and updates it in place, keeping settings, capture history, and saved files. You can open GitHub Releases from **Settings → General**.
+Run **`KumaCaptureUpdater.exe`** from GitHub Releases or the Start menu. It looks for a newer version, checks the installer download, and installs over the existing app. If your current version is older than 0.3.0, quit it from the tray when the updater asks. Portable users can extract the new ZIP.
 
 ## Quick start
 
@@ -71,16 +71,16 @@ To change a shortcut, click its binding under **Settings → Hotkeys**, then pre
 
 ## Build from source
 
-Install Rust 1.100.0, the MSVC build tools, Python 3.12 or newer, and NSIS 3.11 or newer on Windows. Run these commands from the repository root.
+Install Rust 1.100.0, the MSVC build tools, Python 3.12 or newer, .NET SDK 10.0, and NSIS 3.11 or newer on Windows. Run these commands from the repository root.
 
 ```powershell
 cargo test --locked
 cargo build --release --locked
-python packaging/package.py --exe target/release/kuma-capture.exe --nsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+python packaging/package.py --exe target/release/kuma-capture.exe --updater target/release/kuma-updater.exe --nsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
 ```
 
 The packager verifies dependency checksums and writes the installer, portable ZIP, and SHA-256 checksums to `dist/`. See the [Windows CI workflow](.github/workflows/windows.yml).
 
 ## Credits and license
 
-Kuma Capture uses a [ShareX](https://github.com/ShareX/ShareX)-derived screenshot workflow, bundled [OBS Studio](https://github.com/obsproject/obs-studio) for video, and [rclone](https://rclone.org/) for storage. The bear artwork is original to the project. See the [third-party notes](docs/THIRD-PARTY.md) and [GPL-3.0-or-later license](LICENSE).
+Kuma Capture bundles the upstream [ShareX](https://github.com/ShareX/ShareX) screenshot engine, bundled [OBS Studio](https://github.com/obsproject/obs-studio) for video, and [rclone](https://rclone.org/) for storage. The bear artwork is original to the project. See the [third-party notes](docs/THIRD-PARTY.md) and [GPL-3.0-or-later license](LICENSE).

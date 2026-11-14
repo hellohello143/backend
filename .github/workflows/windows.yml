@@ -18,6 +18,9 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.404"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -38,15 +41,28 @@ jobs:
       - name: Compile and test the package
         shell: pwsh
         run: |
-          python packaging/package.py --exe target/release/kuma-capture.exe --nsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          python packaging/package.py --exe target/release/kuma-capture.exe --updater target/release/kuma-updater.exe --nsis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $app = Start-Process -FilePath .\dist\stage\KumaCapture.exe -ArgumentList '--version' -Wait -PassThru
           if ($app.ExitCode -ne 0) { exit $app.ExitCode }
+          $updater = Start-Process -FilePath .\dist\KumaCaptureUpdater.exe -ArgumentList '--version' -Wait -PassThru
+          if ($updater.ExitCode -ne 0) { exit $updater.ExitCode }
+      - name: Verify the installer on Windows
+        shell: pwsh
+        run: |
+          $setup = Start-Process -FilePath .\dist\KumaCaptureSetup.exe -ArgumentList '/S' -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { exit $setup.ExitCode }
+          $install = Join-Path $env:LOCALAPPDATA 'Programs\Kuma Capture'
+          if (!(Test-Path "$install\KumaCaptureUpdater.exe") -or !(Test-Path "$install\sharex\KumaShareX.dll")) {
+            throw 'The installer did not deploy the updater and ShareX bridge.'
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: KumaCapture-Windows-x64
           path: |
             dist/KumaCaptureSetup.exe
+            dist/KumaCaptureUpdater.exe
+            dist/KumaCaptureUpdate.json
             dist/KumaCapture-Windows-x64.zip
             dist/SHA256SUMS.txt
             docs/TESTER.md
@@ -78,12 +94,12 @@ jobs:
           if [[ -z "$TAG" ]]; then
             TAG="tester-${REVISION:0:12}"
           fi
-          assets=(KumaCaptureSetup.exe KumaCapture-Windows-x64.zip SHA256SUMS.txt ../docs/TESTER.md)
+          assets=(KumaCaptureSetup.exe KumaCaptureUpdater.exe KumaCaptureUpdate.json KumaCapture-Windows-x64.zip SHA256SUMS.txt ../docs/TESTER.md)
           if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists."
             exit 0
           fi
           gh release create "$TAG" "${assets[@]}" --repo "$REPOSITORY" --target "$REVISION" \
             --prerelease --draft --title "Kuma Capture · Windows tester build $TAG" \
-            --notes "Run KumaCaptureSetup.exe on Windows 11 x64. To update, quit Kuma Capture from the tray first, then run setup over the existing installation. It includes the capture and storage runtimes. See TESTER.md for changes and manual checks. This build is unsigned."
+            --notes "Run KumaCaptureSetup.exe on Windows 11 x64. Installed users can download KumaCaptureUpdater.exe to update automatically, or run setup over the existing installation. It includes the capture and storage runtimes. See TESTER.md for changes and manual checks. This build is unsigned."
           gh release edit "$TAG" --repo "$REPOSITORY" --draft=false

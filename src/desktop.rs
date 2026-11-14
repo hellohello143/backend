@@ -1,5 +1,4 @@
 use crate::capture;
-use anyhow::{bail, Result};
 use image::RgbaImage;
 use std::{
     path::PathBuf,
@@ -19,12 +18,10 @@ use windows_sys::Win32::{
             GetDpiForWindow, SetThreadDpiAwarenessContext,
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
-        Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus},
         WindowsAndMessaging::*,
     },
 };
 
-const SNIP_CLASS: &[u16] = &[75, 117, 109, 97, 83, 110, 105, 112, 0];
 const PREVIEW_CLASS: &[u16] = &[75, 117, 109, 97, 80, 114, 101, 118, 105, 101, 119, 0];
 const SCREENSHOT_SOUND: &[u8] = include_bytes!("../assets/capture-chime.wav");
 static PREVIEW_GENERATION: AtomicUsize = AtomicUsize::new(0);
@@ -83,75 +80,6 @@ impl DesktopImage {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    Rectangle,
-    Window,
-    Display,
-    Desktop,
-}
-const MODES: [Mode; 4] = [Mode::Rectangle, Mode::Window, Mode::Display, Mode::Desktop];
-
-pub struct Selection {
-    pub image: RgbaImage,
-    pub label: &'static str,
-    pub copy_image: bool,
-}
-
-struct Snip {
-    bounds: RECT,
-    desktop: DesktopImage,
-    dark: DesktopImage,
-    windows: Vec<RECT>,
-    monitors: Vec<RECT>,
-    toolbar: RECT,
-    buttons: Vec<HWND>,
-    mode: Mode,
-    anchor: Option<POINT>,
-    point: POINT,
-    result: Option<(RECT, &'static str)>,
-    include_cursor: bool,
-    copy_image: bool,
-    cursor: Option<capture::CapturedCursor>,
-}
-
-impl Snip {
-    fn selection(&self) -> Option<RECT> {
-        match self.mode {
-            Mode::Rectangle => self.anchor.map(|start| RECT {
-                left: start.x.min(self.point.x),
-                top: start.y.min(self.point.y),
-                right: start.x.max(self.point.x),
-                bottom: start.y.max(self.point.y),
-            }),
-            Mode::Window => self
-                .windows
-                .iter()
-                .copied()
-                .find(|rect| inside(*rect, self.point)),
-            Mode::Display => self
-                .monitors
-                .iter()
-                .copied()
-                .find(|rect| inside(*rect, self.point)),
-            Mode::Desktop => Some(self.bounds),
-        }
-    }
-}
-
-fn inside(rect: RECT, point: POINT) -> bool {
-    point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
-}
-
-fn client(rect: RECT, bounds: RECT) -> RECT {
-    RECT {
-        left: rect.left - bounds.left,
-        top: rect.top - bounds.top,
-        right: rect.right - bounds.left,
-        bottom: rect.bottom - bounds.top,
-    }
-}
-
 fn cursor_point() -> POINT {
     let mut point = POINT { x: 0, y: 0 };
     unsafe {
@@ -172,12 +100,12 @@ fn work_area(point: POINT) -> RECT {
     }
 }
 
-fn register(class_name: &[u16], procedure: WNDPROC, crosshair: bool) -> bool {
+fn register(class_name: &[u16], procedure: WNDPROC) -> bool {
     unsafe {
         let mut class: WNDCLASSW = std::mem::zeroed();
         class.lpfnWndProc = procedure;
         class.hInstance = GetModuleHandleW(null());
-        class.hCursor = LoadCursorW(null_mut(), if crosshair { IDC_CROSS } else { IDC_ARROW });
+        class.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
         class.lpszClassName = class_name.as_ptr();
         RegisterClassW(&class) != 0 || windows_sys::Win32::Foundation::GetLastError() == 1410
     }
@@ -196,304 +124,12 @@ fn message_loop(window: HWND) {
     }
 }
 
-pub fn snip(include_cursor: bool, copy_image: bool) -> Result<Option<Selection>> {
-    unsafe {
-        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    }
-    let bounds = capture::virtual_desktop();
-    let pixels = capture::screen(bounds, false)?;
-    let cursor = capture::CapturedCursor::get();
-    let mut dark = pixels.clone();
-    for pixel in dark.pixels_mut() {
-        for channel in &mut pixel.0[..3] {
-            *channel = (*channel as u16 * 54 / 100) as u8;
-        }
-    }
-    let point = cursor_point();
-    let area = client(work_area(point), bounds);
-    let mut state = Box::new(Snip {
-        bounds,
-        desktop: DesktopImage::new(pixels),
-        dark: DesktopImage::new(dark),
-        windows: capture::visible_windows(),
-        monitors: capture::displays()
-            .into_iter()
-            .map(|display| display.rect)
-            .collect(),
-        toolbar: area,
-        buttons: Vec::new(),
-        mode: Mode::Rectangle,
-        anchor: None,
-        point,
-        result: None,
-        include_cursor,
-        copy_image,
-        cursor,
-    });
-    static CLASS: OnceLock<bool> = OnceLock::new();
-    if !CLASS.get_or_init(|| register(SNIP_CLASS, Some(snip_proc), true)) {
-        bail!("Could not register the snipping overlay.");
-    }
-    unsafe {
-        let window = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            SNIP_CLASS.as_ptr(),
-            wide("Kuma Capture snipping overlay").as_ptr(),
-            WS_POPUP,
-            bounds.left,
-            bounds.top,
-            bounds.right - bounds.left,
-            bounds.bottom - bounds.top,
-            null_mut(),
-            null_mut(),
-            GetModuleHandleW(null()),
-            (&mut *state as *mut Snip).cast(),
-        );
-        if window.is_null() {
-            bail!("Could not open the snipping overlay.");
-        }
-        SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
-        create_toolbar(window, &mut state);
-        ShowWindow(window, SW_SHOW);
-        SetForegroundWindow(window);
-        SetFocus(window);
-        message_loop(window);
-    }
-    Ok(state.result.map(|(selection, label)| {
-        let rect = client(selection, bounds);
-        let mut image = image::imageops::crop_imm(
-            &state.desktop.pixels,
-            rect.left as u32,
-            rect.top as u32,
-            (rect.right - rect.left) as u32,
-            (rect.bottom - rect.top) as u32,
-        )
-        .to_image();
-        if state.include_cursor {
-            if let Some(cursor) = state.cursor.take() {
-                cursor.paint(&mut image, selection);
-            }
-        }
-        Selection {
-            image,
-            label,
-            copy_image: state.copy_image,
-        }
-    }))
-}
-
-unsafe fn create_toolbar(window: HWND, state: &mut Snip) {
-    let dpi = GetDpiForWindow(window).max(96) as i32;
-    let px = |value: i32| value * dpi / 96;
-    let area = state.toolbar;
-    let width = px(532).min(area.right - area.left - 12);
-    let left = area.left + (area.right - area.left - width) / 2;
-    let top = area.top + px(12);
-    state.toolbar = RECT {
-        left,
-        top,
-        right: left + width,
-        bottom: top + px(48),
-    };
-    let font = GetStockObject(DEFAULT_GUI_FONT);
-    let labels = [
-        "Rectangle",
-        "Window",
-        "Display",
-        "All screens",
-        "Cursor",
-        "Copy",
-        "Cancel",
-    ];
-    let weights = [83, 72, 69, 89, 70, 66, 67];
-    let mut x = left + px(8);
-    for (index, (label, weight)) in labels.into_iter().zip(weights).enumerate() {
-        let w = (width - px(16)) * weight / 516;
-        let style = if index < 4 {
-            BS_RADIOBUTTON
-        } else if index < 6 {
-            BS_AUTOCHECKBOX
-        } else {
-            BS_PUSHBUTTON
-        };
-        let button = CreateWindowExW(
-            0,
-            wide("BUTTON").as_ptr(),
-            wide(label).as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | style as u32,
-            x,
-            top + px(8),
-            w - 2,
-            px(31),
-            window,
-            (index + 1) as _,
-            GetModuleHandleW(null()),
-            null(),
-        );
-        SendMessageW(button, WM_SETFONT, font as usize, 1);
-        state.buttons.push(button);
-        x += w;
-    }
-    for (index, checked) in [(0, true), (4, state.include_cursor), (5, state.copy_image)] {
-        SendMessageW(state.buttons[index], BM_SETCHECK, checked as usize, 0);
-    }
-}
-
 unsafe fn attach_state<T>(window: HWND, message: u32, lparam: LPARAM) -> *mut T {
     if message == WM_NCCREATE {
         let create = &*(lparam as *const CREATESTRUCTW);
         SetWindowLongPtrW(window, GWLP_USERDATA, create.lpCreateParams as isize);
     }
     GetWindowLongPtrW(window, GWLP_USERDATA) as *mut T
-}
-
-unsafe extern "system" fn snip_proc(
-    window: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    let state = attach_state::<Snip>(window, message, lparam);
-    if state.is_null() {
-        return DefWindowProcW(window, message, wparam, lparam);
-    }
-    let state = &mut *state;
-    match message {
-        WM_COMMAND => {
-            let control = (wparam & 0xFFFF) as usize;
-            match control {
-                1..=4 => {
-                    state.mode = MODES[control - 1];
-                    state.anchor = None;
-                    for (index, button) in state.buttons[..4].iter().enumerate() {
-                        SendMessageW(*button, BM_SETCHECK, (index + 1 == control) as usize, 0);
-                    }
-                }
-                5 => state.include_cursor = SendMessageW(state.buttons[4], BM_GETCHECK, 0, 0) != 0,
-                6 => state.copy_image = SendMessageW(state.buttons[5], BM_GETCHECK, 0, 0) != 0,
-                7 => {
-                    PostMessageW(window, WM_CLOSE, 0, 0);
-                    return 0;
-                }
-                _ => return DefWindowProcW(window, message, wparam, lparam),
-            }
-            SetFocus(window);
-            InvalidateRect(window, null(), 0);
-            0
-        }
-        WM_KEYDOWN if wparam == 0x1B => {
-            PostMessageW(window, WM_CLOSE, 0, 0);
-            0
-        }
-        WM_KEYDOWN if (0x31..=0x34).contains(&wparam) => {
-            PostMessageW(window, WM_COMMAND, wparam - 0x30, 0);
-            0
-        }
-        WM_KEYDOWN if wparam == 0x0D && state.mode != Mode::Rectangle => {
-            finish_selection(window, state);
-            0
-        }
-        WM_RBUTTONDOWN | WM_DISPLAYCHANGE => {
-            PostMessageW(window, WM_CLOSE, 0, 0);
-            0
-        }
-        WM_LBUTTONDOWN => {
-            state.point = cursor_point();
-            if state.mode == Mode::Rectangle {
-                state.anchor = Some(state.point);
-                SetCapture(window);
-            } else {
-                finish_selection(window, state);
-            }
-            0
-        }
-        WM_MOUSEMOVE => {
-            state.point = cursor_point();
-            InvalidateRect(window, null(), 0);
-            0
-        }
-        WM_LBUTTONUP if state.anchor.is_some() => {
-            state.point = cursor_point();
-            finish_selection(window, state);
-            state.anchor = None;
-            ReleaseCapture();
-            InvalidateRect(window, null(), 0);
-            0
-        }
-        WM_CAPTURECHANGED => {
-            state.anchor = None;
-            0
-        }
-        WM_PAINT => {
-            let mut paint: PAINTSTRUCT = std::mem::zeroed();
-            let dc = BeginPaint(window, &mut paint);
-            let full = client(state.bounds, state.bounds);
-            state.dark.paint(dc, full);
-            if let Some(selection) = state.selection() {
-                let bright = client(selection, state.bounds);
-                let saved = SaveDC(dc);
-                IntersectClipRect(dc, bright.left, bright.top, bright.right, bright.bottom);
-                state.desktop.paint(dc, full);
-                RestoreDC(dc, saved);
-                let pink = CreateSolidBrush(0x00C9B7FF);
-                FrameRect(dc, &bright, pink);
-                DeleteObject(pink);
-                if state.anchor.is_some()
-                    && bright.right > bright.left
-                    && bright.bottom > bright.top
-                {
-                    let mut label = RECT {
-                        left: bright.left + 4,
-                        right: bright.left + 150,
-                        top: (bright.top - 23).max(0),
-                        bottom: bright.top.max(23),
-                    };
-                    let size = wide(&format!(
-                        "{} × {}",
-                        bright.right - bright.left,
-                        bright.bottom - bright.top
-                    ));
-                    SetBkMode(dc, OPAQUE as i32);
-                    SetBkColor(dc, 0x00E8F2FF);
-                    SetTextColor(dc, 0x002B3657);
-                    DrawTextW(
-                        dc,
-                        size.as_ptr(),
-                        -1,
-                        &mut label,
-                        DT_SINGLELINE | DT_VCENTER,
-                    );
-                }
-            }
-            let cream = CreateSolidBrush(0x00E8F2FF);
-            FillRect(dc, &state.toolbar, cream);
-            DeleteObject(cream);
-            EndPaint(window, &paint);
-            0
-        }
-        _ => DefWindowProcW(window, message, wparam, lparam),
-    }
-}
-
-unsafe fn finish_selection(window: HWND, state: &mut Snip) {
-    if let Some(mut rect) = state.selection() {
-        rect.left = rect.left.max(state.bounds.left);
-        rect.top = rect.top.max(state.bounds.top);
-        rect.right = rect.right.min(state.bounds.right);
-        rect.bottom = rect.bottom.min(state.bounds.bottom);
-        if rect.right > rect.left && rect.bottom > rect.top {
-            state.result = Some((
-                rect,
-                match state.mode {
-                    Mode::Rectangle => "Region",
-                    Mode::Window => "Window",
-                    Mode::Display => "Display",
-                    Mode::Desktop => "Desktop",
-                },
-            ));
-            PostMessageW(window, WM_CLOSE, 0, 0);
-        }
-    }
 }
 
 struct Preview {
@@ -521,7 +157,7 @@ pub fn show_preview(image: RgbaImage, path: PathBuf) {
     std::thread::spawn(move || unsafe {
         SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         static CLASS: OnceLock<bool> = OnceLock::new();
-        if !CLASS.get_or_init(|| register(PREVIEW_CLASS, Some(preview_proc), false)) {
+        if !CLASS.get_or_init(|| register(PREVIEW_CLASS, Some(preview_proc))) {
             return;
         }
         let area = work_area(cursor_point());
