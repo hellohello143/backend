@@ -71,7 +71,13 @@ def main():
     shutil.copy2(dependency("vc", cache), stage / "VC_redist.x64.exe")
     setup = output / "KumaCaptureSetup.exe"
     define = "/D" if os.name == "nt" else "-D"
-    subprocess.run([args.nsis, f"{define}STAGE={stage}", f"{define}DEST={setup}", str(ROOT / "packaging" / "setup.nsi")], check=True)
+    definitions = {
+        "VCREDIST": stage / "VC_redist.x64.exe",
+        "PAYLOAD": stage / "*",
+        "DEST": setup,
+    }
+    command = [args.nsis, *(f"{define}{key}={value}" for key, value in definitions.items())]
+    subprocess.run([*command, str(ROOT / "packaging" / "setup.nsi")], check=True)
     checksum = output / "SHA256SUMS.txt"
     checksum.write_text("".join(f"{digest(path)}  {path.name}\n" for path in (setup, portable)), encoding="ascii")
 

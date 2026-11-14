@@ -29,7 +29,7 @@ FunctionEnd
 
 Section "Kuma Capture"
     SetOutPath "$PLUGINSDIR"
-    File /oname=VC_redist.x64.exe "${STAGE}/VC_redist.x64.exe"
+    File /oname=VC_redist.x64.exe "${VCREDIST}"
     SetRegView 64
     ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
     ReadRegDWORD $1 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Bld"
@@ -42,11 +42,11 @@ Section "Kuma Capture"
         ${AndIf} $0 != 1638
             MessageBox MB_ICONEXCLAMATION "The Microsoft C++ runtime did not install (code $0). If video capture fails to start, run the included runtime installer from the application folder."
             SetOutPath "$INSTDIR"
-            File /oname=VC_redist.x64.exe "${STAGE}/VC_redist.x64.exe"
+            File /oname=VC_redist.x64.exe "${VCREDIST}"
         ${EndIf}
     ${EndIf}
     SetOutPath "$INSTDIR"
-    File /r /x VC_redist.x64.exe "${STAGE}/*"
+    File /r /x VC_redist.x64.exe "${PAYLOAD}"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     CreateShortcut "$SMPROGRAMS\Kuma Capture.lnk" "$INSTDIR\KumaCapture.exe"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "DisplayName" "Kuma Capture"
