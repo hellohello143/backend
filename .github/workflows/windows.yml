@@ -85,5 +85,5 @@ jobs:
           fi
           gh release create "$TAG" "${assets[@]}" --repo "$REPOSITORY" --target "$REVISION" \
             --prerelease --draft --title "Kuma Capture · Windows tester build $TAG" \
-            --notes "Run KumaCaptureSetup.exe on Windows 11 x64. It includes the capture and storage runtimes. See TESTER.md for the manual checks. This build is unsigned."
+            --notes "Run KumaCaptureSetup.exe on Windows 11 x64. To update, quit Kuma Capture from the tray first, then run setup over the existing installation. It includes the capture and storage runtimes. See TESTER.md for changes and manual checks. This build is unsigned."
           gh release edit "$TAG" --repo "$REPOSITORY" --draft=false

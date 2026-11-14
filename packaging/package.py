@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tomllib
 import urllib.request
 from zipfile import ZipFile, ZIP_DEFLATED
 
@@ -75,6 +76,7 @@ def main():
         "VCREDIST": stage / "VC_redist.x64.exe",
         "PAYLOAD": stage / "*",
         "DEST": setup,
+        "VERSION": tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"],
     }
     command = [args.nsis, *(f"{define}{key}={value}" for key, value in definitions.items())]
     subprocess.run([*command, str(ROOT / "packaging" / "setup.nsi")], check=True)

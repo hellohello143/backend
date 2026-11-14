@@ -8,6 +8,7 @@ ShowInstDetails show
 
 !include "LogicLib.nsh"
 !include "x64.nsh"
+!include "FileFunc.nsh"
 
 Page directory
 Page instfiles
@@ -24,6 +25,19 @@ Function .onInit
         System::Call 'kernel32::CloseHandle(p r0)'
         MessageBox MB_ICONSTOP "Quit Kuma Capture from the system tray before updating."
         Abort
+    ${EndIf}
+    SetRegView 64
+    ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "InstallLocation"
+    ${If} $0 == ""
+        ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "UninstallString"
+        ${If} $1 != ""
+            StrCpy $1 $1 -1 1
+            ${GetParent} "$1" $0
+        ${EndIf}
+    ${EndIf}
+    ${If} $0 != ""
+    ${AndIf} ${FileExists} "$0\KumaCapture.exe"
+        StrCpy $INSTDIR $0
     ${EndIf}
 FunctionEnd
 
@@ -50,10 +64,13 @@ Section "Kuma Capture"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     CreateShortcut "$SMPROGRAMS\Kuma Capture.lnk" "$INSTDIR\KumaCapture.exe"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "DisplayName" "Kuma Capture"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "DisplayVersion" "${VERSION}"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture" "UninstallString" '"$INSTDIR\Uninstall.exe"'
 SectionEnd
 
 Section "Uninstall"
+    SetRegView 64
     Delete "$SMPROGRAMS\Kuma Capture.lnk"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kuma Capture"
     Delete "$INSTDIR\KumaCapture.exe"

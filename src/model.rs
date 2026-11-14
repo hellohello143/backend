@@ -108,6 +108,8 @@ pub struct Settings {
     pub cursor: bool,
     pub copy_screenshot: bool,
     pub copy_path: bool,
+    pub screenshot_preview: bool,
+    pub screenshot_sound: bool,
     pub close_to_tray: bool,
     pub dark: bool,
     pub last_category: usize,
@@ -136,6 +138,8 @@ impl Default for Settings {
             cursor: false,
             copy_screenshot: false,
             copy_path: false,
+            screenshot_preview: true,
+            screenshot_sound: true,
             close_to_tray: true,
             dark: false,
             last_category: 0,
@@ -407,6 +411,8 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"replay_seconds":60}"#).unwrap();
         assert_eq!(settings.replay_seconds, 60);
         assert_eq!(settings.fps, 60);
+        assert!(settings.screenshot_preview);
+        assert!(settings.screenshot_sound);
         assert_eq!(settings.hotkeys[4], "Ctrl+Shift+5");
     }
 }

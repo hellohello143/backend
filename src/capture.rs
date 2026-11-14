@@ -7,7 +7,7 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
 use std::borrow::Cow;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::{
-    Foundation::{BOOL, HWND, LPARAM, RECT},
+    Foundation::{BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::{Dwm::DwmGetWindowAttribute, Gdi::*},
     UI::WindowsAndMessaging::*,
 };
@@ -110,6 +110,10 @@ pub fn active_window(previous: HWND) -> Result<RECT> {
     if hwnd.is_null() {
         bail!("No active window.");
     }
+    window_bounds(hwnd)
+}
+
+fn window_bounds(hwnd: HWND) -> Result<RECT> {
     let mut rect: RECT = unsafe { std::mem::zeroed() };
     let result = unsafe {
         DwmGetWindowAttribute(
@@ -130,38 +134,92 @@ pub fn active_window(previous: HWND) -> Result<RECT> {
     Ok(rect)
 }
 
+pub fn visible_windows() -> Vec<RECT> {
+    unsafe extern "system" fn visit(hwnd: HWND, context: LPARAM) -> BOOL {
+        if IsWindowVisible(hwnd) != 0
+            && IsIconic(hwnd) == 0
+            && GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW == 0
+        {
+            let mut cloaked = 0u32;
+            DwmGetWindowAttribute(hwnd, 14, (&mut cloaked as *mut u32).cast(), 4);
+            if cloaked == 0 && GetWindowTextLengthW(hwnd) > 0 {
+                if let Ok(rect) = window_bounds(hwnd) {
+                    (&mut *(context as *mut Vec<RECT>)).push(rect);
+                }
+            }
+        }
+        1
+    }
+    let mut result = Vec::new();
+    unsafe {
+        EnumWindows(Some(visit), (&mut result as *mut Vec<RECT>) as LPARAM);
+    }
+    result
+}
+
+pub struct CapturedCursor {
+    icon: HICON,
+    spot: POINT,
+}
+
+impl CapturedCursor {
+    pub fn get() -> Option<Self> {
+        unsafe {
+            let mut cursor: CURSORINFO = std::mem::zeroed();
+            cursor.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
+            if GetCursorInfo(&mut cursor) == 0 || cursor.flags & CURSOR_SHOWING == 0 {
+                return None;
+            }
+            let icon = CopyIcon(cursor.hCursor);
+            (!icon.is_null()).then_some(Self {
+                icon,
+                spot: cursor.ptScreenPos,
+            })
+        }
+    }
+
+    pub fn paint(&self, target: &mut RgbaImage, rect: RECT) {
+        unsafe {
+            let Ok((surface, bits)) = Surface::new(target.width() as i32, target.height() as i32)
+            else {
+                return;
+            };
+            let bgra = std::slice::from_raw_parts_mut(bits.cast::<u8>(), target.as_raw().len());
+            for (bgra, rgba) in bgra
+                .chunks_exact_mut(4)
+                .zip(target.as_raw().chunks_exact(4))
+            {
+                bgra.copy_from_slice(&[rgba[2], rgba[1], rgba[0], 255]);
+            }
+            draw_icon(surface.memory, rect, self.icon, self.spot);
+            GdiFlush();
+            for (rgba, bgra) in target
+                .as_mut()
+                .chunks_exact_mut(4)
+                .zip(bgra.chunks_exact(4))
+            {
+                rgba.copy_from_slice(&[bgra[2], bgra[1], bgra[0], 255]);
+            }
+        }
+    }
+}
+
+impl Drop for CapturedCursor {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyIcon(self.icon);
+        }
+    }
+}
+
 struct Surface {
     desktop: HDC,
     memory: HDC,
     bitmap: HBITMAP,
     previous: HGDIOBJ,
 }
-impl Drop for Surface {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.previous.is_null() {
-                SelectObject(self.memory, self.previous);
-            }
-            if !self.bitmap.is_null() {
-                DeleteObject(self.bitmap);
-            }
-            if !self.memory.is_null() {
-                DeleteDC(self.memory);
-            }
-            if !self.desktop.is_null() {
-                ReleaseDC(null_mut(), self.desktop);
-            }
-        }
-    }
-}
-
-pub fn screen(rect: RECT, cursor: bool) -> Result<RgbaImage> {
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    if width < 1 || height < 1 || width as u64 * height as u64 > 120_000_000 {
-        bail!("Invalid capture dimensions.");
-    }
-    unsafe {
+impl Surface {
+    unsafe fn new(width: i32, height: i32) -> Result<(Self, *mut u8)> {
         let mut surface = Surface {
             desktop: GetDC(null_mut()),
             memory: null_mut(),
@@ -198,6 +256,36 @@ pub fn screen(rect: RECT, cursor: bool) -> Result<RgbaImage> {
         if surface.previous.is_null() {
             bail!("Could not select the capture bitmap.");
         }
+        Ok((surface, bits.cast()))
+    }
+}
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.previous.is_null() {
+                SelectObject(self.memory, self.previous);
+            }
+            if !self.bitmap.is_null() {
+                DeleteObject(self.bitmap);
+            }
+            if !self.memory.is_null() {
+                DeleteDC(self.memory);
+            }
+            if !self.desktop.is_null() {
+                ReleaseDC(null_mut(), self.desktop);
+            }
+        }
+    }
+}
+
+pub fn screen(rect: RECT, cursor: bool) -> Result<RgbaImage> {
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width < 1 || height < 1 || width as u64 * height as u64 > 120_000_000 {
+        bail!("Invalid capture dimensions.");
+    }
+    unsafe {
+        let (surface, bits) = Surface::new(width, height)?;
         if BitBlt(
             surface.memory,
             0,
@@ -233,13 +321,17 @@ unsafe fn draw_cursor(dc: HDC, rect: RECT) {
     if GetCursorInfo(&mut cursor) == 0 || cursor.flags & CURSOR_SHOWING == 0 {
         return;
     }
+    draw_icon(dc, rect, cursor.hCursor, cursor.ptScreenPos);
+}
+
+unsafe fn draw_icon(dc: HDC, rect: RECT, handle: HICON, position: POINT) {
     let mut icon: ICONINFO = std::mem::zeroed();
-    if GetIconInfo(cursor.hCursor, &mut icon) != 0 {
+    if GetIconInfo(handle, &mut icon) != 0 {
         DrawIconEx(
             dc,
-            cursor.ptScreenPos.x - rect.left - icon.xHotspot as i32,
-            cursor.ptScreenPos.y - rect.top - icon.yHotspot as i32,
-            cursor.hCursor,
+            position.x - rect.left - icon.xHotspot as i32,
+            position.y - rect.top - icon.yHotspot as i32,
+            handle,
             0,
             0,
             0,

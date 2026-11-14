@@ -26,7 +26,7 @@
 
 **Instant replay.** Arm a rolling buffer and save the last 15, 30, 60, or 120 seconds with a hotkey. Save another clip whenever you want. The buffer keeps running.
 
-**Screenshots your way.** Grab a region, a window, a monitor, or the entire desktop. Save as PNG or JPEG, include the cursor, or send the image straight to your clipboard.
+**Screenshots your way.** A crosshair overlay and top toolbar let you snip a rectangle, a window, a monitor, or all screens. Save as PNG or JPEG, copy to the clipboard, and get a bottom-right preview and a soft chime. The preview and chime have separate toggles.
 
 **Full-monitor recording.** Pick a display and record an MP4. Choose your resolution, frame rate, and encoder, with separate controls for system audio and your microphone.
 
@@ -47,6 +47,10 @@ Look for these files under [GitHub Releases](../../releases) when a build is pub
 
 > **v0.1.0 tester build** · The Windows x64 build and four automated tests passed. Fullscreen hotkeys, audio sync, multi-monitor behavior, and live uploads still need hands-on Windows testing. The tester build is unsigned.
 
+### Updating an existing installation
+
+Quit Kuma Capture from its system tray menu, then run the new `KumaCaptureSetup.exe`. Setup finds your existing installation and updates it in place, keeping settings, capture history, and saved files. You can open GitHub Releases from **Settings → General**.
+
 ## Quick start
 
 1. Pick a monitor under **Settings → Clips & Recording**.
@@ -63,7 +67,7 @@ Look for these files under [GitHub Releases](../../releases) when a build is pub
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>6</kbd> | Arm or stop replay |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>7</kbd> | Start or stop recording |
 
-Shortcuts are editable under **Settings → Hotkeys**. Clips and recordings always include the whole selected monitor, including anything visible when switching apps. The microphone starts off.
+To change a shortcut, click its binding under **Settings → Hotkeys**, then press a key or a combination like **Ctrl+Shift+K**. Clips and recordings always include the whole selected monitor, including anything visible when switching apps. The microphone starts off.
 
 ## Build from source
 

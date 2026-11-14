@@ -6,9 +6,13 @@ mod app;
 mod capture;
 #[cfg(windows)]
 mod chrome;
+#[cfg(windows)]
+mod desktop;
 mod model;
 #[cfg(windows)]
 mod obs;
+#[cfg(windows)]
+mod shortcut;
 #[cfg(windows)]
 mod uploads;
 

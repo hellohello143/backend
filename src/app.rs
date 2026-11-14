@@ -1,8 +1,8 @@
 use crate::{
-    capture,
+    capture, desktop,
     model::{self, DateFolders, Kind, Media, NameInfo, Settings, UploadProfile, ACTIONS},
     obs::Engine,
-    uploads,
+    shortcut, uploads,
 };
 use anyhow::{bail, Context, Result};
 use chrono::Local;
@@ -110,6 +110,7 @@ struct CaptureStatus {
 
 enum Report {
     Saved(Media, Option<String>),
+    Snip(Result<Option<desktop::Selection>, String>, Settings),
     Status(CaptureStatus),
     Done(Result<(), String>),
     Upload(PathBuf, String, Result<String, String>),
@@ -183,7 +184,18 @@ fn worker(root: PathBuf, rx: Receiver<Work>, tx: Sender<Report>, ctx: egui::Cont
             }
             Work::Devices(settings) => engine.inspect_devices(&settings),
             Work::Screenshot(image, label, settings) => {
-                capture::save(image, &label, &settings).map(send_media)
+                let preview = settings
+                    .screenshot_preview
+                    .then(|| image::imageops::thumbnail(&image, 500, 340));
+                capture::save(image, &label, &settings).map(|(media, warning)| {
+                    if settings.screenshot_sound {
+                        desktop::play_sound();
+                    }
+                    if let Some(image) = preview {
+                        desktop::show_preview(image, media.path.clone());
+                    }
+                    send_media((media, warning));
+                })
             }
             Work::Quit => break,
             Work::Reset => {
@@ -202,11 +214,6 @@ enum Page {
     Capture,
     History,
     Settings,
-}
-struct Region {
-    image: RgbaImage,
-    texture: egui::TextureHandle,
-    start: Option<Pos2>,
 }
 struct Tray {
     _icon: TrayIcon,
@@ -290,7 +297,8 @@ struct App {
     hotkeys: Option<GlobalHotKeyManager>,
     registered: Vec<(HotKey, usize)>,
     hotkey_errors: [String; 7],
-    region: Option<Region>,
+    snipping: bool,
+    hotkey_recorder: Option<shortcut::Recorder>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     remotes: Vec<(String, String)>,
     upload_active: Vec<PathBuf>,
@@ -349,7 +357,8 @@ impl App {
             hotkeys,
             registered: Vec::new(),
             hotkey_errors: Default::default(),
-            region: None,
+            snipping: false,
+            hotkey_recorder: None,
             thumbnails: HashMap::new(),
             remotes,
             upload_active: Vec::new(),
@@ -399,10 +408,7 @@ impl App {
                     Ok(()) => self.registered.push((hotkey, index)),
                     Err(_) => self.hotkey_errors[index] = "This shortcut is already in use.".into(),
                 },
-                Err(_) => {
-                    self.hotkey_errors[index] =
-                        "Enter a key combination such as Ctrl+Shift+1.".into()
-                }
+                Err(_) => self.hotkey_errors[index] = "Record a supported Windows shortcut.".into(),
             }
         }
     }
@@ -463,6 +469,21 @@ impl App {
     fn collect_reports(&mut self, ctx: &egui::Context) {
         while let Ok(report) = self.reports.try_recv() {
             match report {
+                Report::Snip(result, mut settings) => {
+                    self.snipping = false;
+                    match result {
+                        Ok(Some(selection)) => {
+                            settings.copy_screenshot = selection.copy_image;
+                            self.send(Work::Screenshot(
+                                selection.image,
+                                selection.label.into(),
+                                settings,
+                            ));
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.notice(error, true),
+                    }
+                }
                 Report::Saved(item, warning) => {
                     let profile = self
                         .settings
@@ -548,11 +569,27 @@ impl App {
             return;
         }
         let settings = self.settings.clone();
+        if self.snipping {
+            return;
+        }
         match action {
             4 => self.send(Work::SaveReplay(settings)),
             5 => self.send(Work::Replay(settings)),
             6 => self.send(Work::Recording(settings)),
-            0..=3 => {
+            0 => {
+                self.snipping = true;
+                desktop::dismiss_preview();
+                let tx = self.report_sender.clone();
+                let ctx = ctx.clone();
+                thread::spawn(move || {
+                    let result = desktop::snip(settings.cursor, settings.copy_screenshot)
+                        .map_err(|error| error.to_string());
+                    let _ = tx.send(Report::Snip(result, settings));
+                    ctx.request_repaint();
+                });
+            }
+            1..=3 => {
+                desktop::dismiss_preview();
                 let result = match action {
                     1 => capture::active_window(self.previous_window as HWND)
                         .map(|rect| (rect, "Window".into())),
@@ -563,22 +600,6 @@ impl App {
                 match result
                     .and_then(|(rect, label)| Ok((capture::screen(rect, settings.cursor)?, label)))
                 {
-                    Ok((image, _)) if action == 0 => {
-                        let preview = egui::ColorImage::from_rgba_unmultiplied(
-                            [image.width() as usize, image.height() as usize],
-                            image.as_raw(),
-                        );
-                        self.region = Some(Region {
-                            image,
-                            texture: ctx.load_texture(
-                                "Region selection",
-                                preview,
-                                egui::TextureOptions::LINEAR,
-                            ),
-                            start: None,
-                        });
-                        self.open(ctx);
-                    }
                     Ok((image, label)) => self.send(Work::Screenshot(image, label, settings)),
                     Err(error) => self.notice(error.to_string(), true),
                 }
@@ -597,7 +618,7 @@ impl App {
             }
         }
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state == HotKeyState::Pressed {
+            if event.state == HotKeyState::Pressed && self.hotkey_recorder.is_none() {
                 if let Some(action) = self
                     .registered
                     .iter()
@@ -731,77 +752,6 @@ impl App {
             });
             ui.add_space(5.0);
         });
-    }
-
-    fn region_view(&mut self, ui: &mut egui::Ui) {
-        let mut crop = None;
-        let mut cancel = false;
-        if let Some(region) = &mut self.region {
-            ui.horizontal(|ui| {
-                ui.heading("Select a screenshot region");
-                cancel = ui.button("Cancel").clicked();
-            });
-            cancel |= ui.input(|input| input.key_pressed(egui::Key::Escape));
-            ui.label("Drag across the captured desktop to select an area.");
-            let factor = (ui.available_width() / region.image.width() as f32)
-                .min((ui.available_height() - 12.0) / region.image.height() as f32)
-                .max(0.05);
-            let size = Vec2::new(
-                region.image.width() as f32 * factor,
-                region.image.height() as f32 * factor,
-            );
-            let response =
-                ui.add(egui::Image::new((region.texture.id(), size)).sense(Sense::drag()));
-            if response.drag_started() {
-                region.start = response.interact_pointer_pos();
-            }
-            if let (Some(start), Some(end)) =
-                (region.start, ui.input(|input| input.pointer.interact_pos()))
-            {
-                let selected = Rect::from_two_pos(start, end).intersect(response.rect);
-                ui.painter().rect_stroke(
-                    selected,
-                    0.0,
-                    Stroke::new(2.0_f32, PINK),
-                    egui::StrokeKind::Inside,
-                );
-                if response.drag_stopped() && selected.is_positive() {
-                    let px = |x: f32| {
-                        ((x - response.rect.left()) / factor)
-                            .round()
-                            .clamp(0.0, region.image.width() as f32) as u32
-                    };
-                    let py = |y: f32| {
-                        ((y - response.rect.top()) / factor)
-                            .round()
-                            .clamp(0.0, region.image.height() as f32) as u32
-                    };
-                    let (x, y, right, bottom) = (
-                        px(selected.left()),
-                        py(selected.top()),
-                        px(selected.right()),
-                        py(selected.bottom()),
-                    );
-                    if right > x && bottom > y {
-                        crop = Some(
-                            image::imageops::crop_imm(&region.image, x, y, right - x, bottom - y)
-                                .to_image(),
-                        );
-                    }
-                    region.start = None;
-                }
-            }
-        }
-        if let Some(image) = crop {
-            self.region = None;
-            self.send(Work::Screenshot(
-                image,
-                "Region".into(),
-                self.settings.clone(),
-            ));
-        } else if cancel {
-            self.region = None;
-        }
     }
 
     fn capture_view(&mut self, ui: &mut egui::Ui) {
@@ -1050,6 +1000,12 @@ impl App {
                                         &mut self.settings.close_to_tray,
                                         "Keep Kuma running in the tray when closed",
                                     );
+                                    ui.separator();
+                                    ui.label(format!("Kuma Capture {}", env!("CARGO_PKG_VERSION")));
+                                    ui.hyperlink_to(
+                                        "Check for updates on GitHub",
+                                        "https://github.com/hellohello143/backend/releases",
+                                    );
                                 }
                                 1 => self.hotkey_settings(ui),
                                 2 => {
@@ -1076,6 +1032,20 @@ impl App {
                                         );
                                     }
                                     ui.checkbox(&mut self.settings.cursor, "Include cursor");
+                                    if ui
+                                        .checkbox(
+                                            &mut self.settings.screenshot_preview,
+                                            "Show a preview after saving",
+                                        )
+                                        .changed()
+                                        && !self.settings.screenshot_preview
+                                    {
+                                        desktop::dismiss_preview();
+                                    }
+                                    ui.checkbox(
+                                        &mut self.settings.screenshot_sound,
+                                        "Play a capture chime",
+                                    );
                                     ui.checkbox(
                                         &mut self.settings.copy_screenshot,
                                         "Copy screenshot image to clipboard",
@@ -1145,6 +1115,8 @@ impl App {
                 self.settings.cursor = defaults.cursor;
                 self.settings.copy_screenshot = defaults.copy_screenshot;
                 self.settings.copy_path = defaults.copy_path;
+                self.settings.screenshot_preview = defaults.screenshot_preview;
+                self.settings.screenshot_sound = defaults.screenshot_sound;
             }
             3 => {
                 self.settings.monitor = defaults.monitor;
@@ -1181,31 +1153,81 @@ impl App {
     }
 
     fn hotkey_settings(&mut self, ui: &mut egui::Ui) {
-        let mut apply = false;
         egui::Grid::new("hotkeys")
-            .num_columns(2)
+            .num_columns(3)
             .spacing([16.0, 10.0])
             .show(ui, |ui| {
-                for (i, action) in ACTIONS.iter().enumerate() {
+                for (index, action) in ACTIONS.iter().enumerate() {
                     ui.label(*action);
-                    ui.vertical(|ui| {
-                        let field = ui.add(
-                            egui::TextEdit::singleline(&mut self.settings.hotkeys[i])
-                                .desired_width(185.0)
-                                .hint_text("Disabled"),
-                        );
-                        if field.lost_focus() {
-                            apply = true;
+                    let key = &self.settings.hotkeys[index];
+                    let label = if key.is_empty() { "Set shortcut" } else { key };
+                    if ui
+                        .button(label)
+                        .on_hover_text("Click to record a shortcut")
+                        .clicked()
+                    {
+                        if let Some(manager) = &self.hotkeys {
+                            for (hotkey, _) in self.registered.drain(..) {
+                                let _ = manager.unregister(hotkey);
+                            }
                         }
-                        if !self.hotkey_errors[i].is_empty() {
-                            ui.colored_label(Color32::RED, &self.hotkey_errors[i]);
-                        }
-                    });
+                        self.hotkey_recorder = Some(shortcut::Recorder::new(index));
+                    }
+                    if ui
+                        .add_enabled(!key.is_empty(), egui::Button::new("Clear"))
+                        .clicked()
+                    {
+                        self.settings.hotkeys[index].clear();
+                        self.register_hotkeys();
+                    }
                     ui.end_row();
+                    if !self.hotkey_errors[index].is_empty() {
+                        ui.label("");
+                        ui.colored_label(Color32::RED, &self.hotkey_errors[index]);
+                        ui.label("");
+                        ui.end_row();
+                    }
                 }
             });
-        if ui.button("Apply hotkeys").clicked() || apply {
+    }
+
+    fn record_hotkey(&mut self, ctx: &egui::Context) {
+        let Some(recorder) = &mut self.hotkey_recorder else {
+            return;
+        };
+        let index = recorder.index;
+        let modifiers = recorder.modifiers();
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("record shortcut")).show(ctx, |ui| {
+            ui.heading(ACTIONS[index]);
+            ui.label("Press a key or hold Ctrl, Alt, Shift, or Windows while pressing a key.");
+            if !modifiers.is_empty() {
+                ui.label(format!("{} + …", modifiers.join(" + ")));
+            }
+            cancel = ui.button("Cancel").clicked();
+        });
+        ctx.request_repaint_after(Duration::from_millis(16));
+        let input = if cancel {
+            Some(shortcut::Input::Cancel)
+        } else if ctx.input(|input| input.focused) {
+            recorder.poll(ctx)
+        } else {
+            Some(shortcut::Input::Cancel)
+        };
+        if let Some(input) = input {
+            self.hotkey_recorder = None;
+            let previous = self.settings.hotkeys[index].clone();
+            if let shortcut::Input::Chord(chord) = input {
+                self.settings.hotkeys[index] = chord;
+            }
             self.register_hotkeys();
+            if !self.hotkey_errors[index].is_empty() && self.settings.hotkeys[index] != previous {
+                let error = self.hotkey_errors[index].clone();
+                self.settings.hotkeys[index] = previous;
+                self.register_hotkeys();
+                self.hotkey_errors[index] = error;
+            }
+            while GlobalHotKeyEvent::receiver().try_recv().is_ok() {}
         }
     }
 
@@ -1546,6 +1568,7 @@ impl eframe::App for App {
         }
         self.inputs(ctx);
         self.collect_reports(ctx);
+        let recording_shortcut = self.hotkey_recorder.is_some();
         if ctx.input(|input| input.viewport().close_requested()) && !self.quit {
             if self.settings.close_to_tray && self.tray.is_some() {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -1569,20 +1592,14 @@ impl eframe::App for App {
             }
             ui.add_space(2.0);
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.region.is_some() {
-                self.region_view(ui);
-                return;
+        egui::CentralPanel::default().show(ctx, |ui| match self.page {
+            Page::Capture => {
+                egui::ScrollArea::vertical().show(ui, |ui| self.capture_view(ui));
             }
-            match self.page {
-                Page::Capture => {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.capture_view(ui));
-                }
-                Page::History => {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.history_view(ui));
-                }
-                Page::Settings => self.settings_view(ui),
+            Page::History => {
+                egui::ScrollArea::vertical().show(ui, |ui| self.history_view(ui));
             }
+            Page::Settings => self.settings_view(ui),
         });
         if self.pending.is_some() {
             egui::Modal::new(egui::Id::new("confirm replay reset")).show(ctx, |ui| {
@@ -1601,6 +1618,9 @@ impl eframe::App for App {
                     }
                 });
             });
+        }
+        if recording_shortcut {
+            self.record_hotkey(ctx);
         }
         self.remember_settings();
     }
