@@ -158,6 +158,7 @@ pub struct Engine {
     socket: Option<Socket>,
     display: Option<capture::Display>,
     dimensions: String,
+    recording_program: String,
     pub replay: Option<Instant>,
     pub recording: Option<Instant>,
     pub devices: [Vec<(String, String)>; 2],
@@ -173,6 +174,7 @@ impl Engine {
             socket: None,
             display: None,
             dimensions: String::new(),
+            recording_program: String::new(),
             replay: None,
             recording: None,
             devices: Default::default(),
@@ -383,14 +385,29 @@ impl Engine {
         Ok(())
     }
 
-    pub fn toggle_recording(&mut self, settings: &Settings) -> Result<Option<Media>> {
+    pub fn toggle_recording(
+        &mut self,
+        settings: &Settings,
+        program: String,
+    ) -> Result<Option<Media>> {
         if let Some(started) = self.recording {
-            let socket = self.socket()?;
-            socket
-                .events
-                .retain(|event| event["eventType"] != "RecordStateChanged");
-            let reply = socket.call_simple("StopRecord")?;
-            self.recording = None;
+            return self.finish_recording(settings, started).map(Some);
+        }
+        self.start_output(settings, "StartRecord")?;
+        self.recording = Some(Instant::now());
+        self.recording_program = program;
+        Ok(None)
+    }
+
+    fn finish_recording(&mut self, settings: &Settings, started: Instant) -> Result<Media> {
+        let socket = self.socket()?;
+        socket
+            .events
+            .retain(|event| event["eventType"] != "RecordStateChanged");
+        let reply = socket.call_simple("StopRecord")?;
+        self.recording = None;
+        let program = std::mem::take(&mut self.recording_program);
+        let result = (|| {
             let path = if reply["outputPath"].is_string() {
                 reply["outputPath"].clone()
             } else {
@@ -400,20 +417,18 @@ impl Engine {
                     })?["outputPath"]
                     .clone()
             };
-            let media = self.finish(
+            self.finish(
                 settings,
                 Kind::Recording,
                 &path,
                 started.elapsed().as_secs(),
-            );
-            if self.replay.is_none() {
-                self.stop();
-            }
-            return media.map(Some);
+                program,
+            )
+        })();
+        if self.replay.is_none() {
+            self.stop();
         }
-        self.start_output(settings, "StartRecord")?;
-        self.recording = Some(Instant::now());
-        Ok(None)
+        result
     }
 
     fn start_output(&mut self, settings: &Settings, request: &str) -> Result<()> {
@@ -457,7 +472,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn save_replay(&mut self, settings: &Settings) -> Result<Media> {
+    pub fn save_replay(&mut self, settings: &Settings, program: String) -> Result<Media> {
         let started = self.replay.context("Arm instant replay first.")?;
         if started.elapsed().as_secs() < 2 {
             bail!("The replay buffer is still filling. Try again in a moment.");
@@ -476,6 +491,7 @@ impl Engine {
                 .elapsed()
                 .as_secs()
                 .min(settings.replay_seconds as u64),
+            program,
         )
     }
 
@@ -485,6 +501,7 @@ impl Engine {
         kind: Kind,
         path: &Value,
         estimated_seconds: u64,
+        program: String,
     ) -> Result<Media> {
         let original = PathBuf::from(
             path.as_str()
@@ -495,6 +512,7 @@ impl Engine {
         let duration = mp4_duration(&original).or(Some(estimated_seconds));
         let info = NameInfo {
             kind,
+            program: &program,
             timestamp: now,
             monitor: self
                 .display
@@ -517,6 +535,7 @@ impl Engine {
         }
         Ok(Media {
             kind,
+            program,
             path,
             timestamp: now,
             dimensions: self.dimensions.clone(),
@@ -536,8 +555,8 @@ impl Engine {
         }
         if let Some(display) = &self.display {
             if !capture::displays().iter().any(|item| item.id == display.id) {
-                let media = if self.recording.is_some() {
-                    self.toggle_recording(settings)?
+                let media = if let Some(started) = self.recording {
+                    Some(self.finish_recording(settings, started)?)
                 } else {
                     None
                 };
@@ -601,6 +620,7 @@ impl Engine {
         self.display = None;
         self.replay = None;
         self.recording = None;
+        self.recording_program.clear();
         self.meters = [0.0; 2];
         self.fallback = false;
     }

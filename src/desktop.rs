@@ -1,7 +1,8 @@
 use crate::capture;
 use image::RgbaImage;
 use std::{
-    path::PathBuf,
+    os::windows::ffi::OsStrExt,
+    path::{Path, PathBuf},
     ptr::{null, null_mut},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -18,6 +19,7 @@ use windows_sys::Win32::{
             GetDpiForWindow, SetThreadDpiAwarenessContext,
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
+        Shell::ShellExecuteW,
         WindowsAndMessaging::*,
     },
 };
@@ -39,6 +41,24 @@ pub fn play_sound() {
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
+}
+
+pub fn open_capture(path: &Path) -> std::io::Result<()> {
+    let path: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            null_mut(),
+            null(),
+            path.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as isize <= 32 {
+        return Err(std::io::Error::other("Windows could not open the capture. Check that the file still exists and has a default app."));
+    }
+    Ok(())
 }
 
 struct DesktopImage {

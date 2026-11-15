@@ -28,6 +28,10 @@ An illustrated Capture workspace, light and dark themes, a thumbnail History wit
 
 ![Kuma Capture light theme with replay armed](docs/kuma-capture-preview.png)
 
+### New in 0.4.1
+
+New captures start with the foreground program name and use minute-level timestamps, for example `Chrome_screenshot_2026-11-15_09-42.png`. A sequence suffix distinguishes captures saved in the same minute. In **History → Programs**, choose a program and filter its screenshots, clips, or recordings. Left-click a capture to open it, or right-click to see its actions.
+
 ## For the moments you almost missed
 
 **Instant replay.** Arm a rolling buffer and save the last 15, 30, 60, or 120 seconds with a hotkey. Save another clip whenever you want. The buffer keeps running.

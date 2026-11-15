@@ -24,7 +24,8 @@ const DEFAULT_KEYS: [&str; 7] = [
     "Ctrl+Shift+6",
     "Ctrl+Shift+7",
 ];
-pub const DEFAULT_TEMPLATE: &str = "{type}_{date:yyyy-MM-dd}_{time:HH-mm-ss-fff}";
+pub const DEFAULT_TEMPLATE: &str = "{type}_{date:yyyy-MM-dd}_{time:HH-mm}";
+const MAX_FILE_STEM: usize = 110;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
@@ -153,6 +154,8 @@ impl Default for Settings {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Media {
     pub kind: Kind,
+    #[serde(default)]
+    pub program: String,
     pub path: PathBuf,
     pub timestamp: DateTime<Local>,
     pub dimensions: String,
@@ -161,6 +164,16 @@ pub struct Media {
     pub link: String,
     #[serde(default)]
     pub upload_profile: String,
+}
+
+impl Media {
+    pub fn program_label(&self) -> &str {
+        if self.program.is_empty() {
+            "Older captures"
+        } else {
+            &self.program
+        }
+    }
 }
 
 pub fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
@@ -186,6 +199,7 @@ pub fn write_json(path: &Path, data: &impl Serialize) -> Result<()> {
 
 pub struct NameInfo<'a> {
     pub kind: Kind,
+    pub program: &'a str,
     pub timestamp: DateTime<Local>,
     pub monitor: &'a str,
     pub dimensions: &'a str,
@@ -233,7 +247,9 @@ pub fn full_path(dest: &Destination, info: &NameInfo<'_>, sequence: u32) -> Resu
     } else {
         &dest.template
     };
-    let mut name = String::new();
+    let program: String = safe_name(info.program).chars().take(48).collect();
+    let mut name = format!("{}_", program.trim_end_matches([' ', '.']));
+    let mut has_sequence = false;
     let mut remaining = template;
     while let Some((before, rest)) = remaining.split_once('{') {
         name.push_str(before);
@@ -248,19 +264,23 @@ pub fn full_path(dest: &Destination, info: &NameInfo<'_>, sequence: u32) -> Resu
             "duration" => info
                 .duration
                 .map_or_else(|| "NA".into(), |seconds| seconds.to_string()),
-            "seq" => format!("{sequence:03}"),
+            "seq" => {
+                let digits = format!("{sequence:03}");
+                has_sequence |= name.chars().count() + digits.len() <= MAX_FILE_STEM;
+                digits
+            }
             "date:yyyy-MM-dd" => info.timestamp.format("%Y-%m-%d").to_string(),
             "date:yyyyMMdd" => info.timestamp.format("%Y%m%d").to_string(),
             "date:yyyy-MM" => info.timestamp.format("%Y-%m").to_string(),
-            "time:HH-mm-ss-fff" => info.timestamp.format("%H-%M-%S-%3f").to_string(),
-            "time:HHmmss" => info.timestamp.format("%H%M%S").to_string(),
+            "time:HH-mm" | "time:HH-mm-ss-fff" => info.timestamp.format("%H-%M").to_string(),
+            "time:HHmm" | "time:HHmmss" => info.timestamp.format("%H%M").to_string(),
             _ => bail!("Unknown filename token {{{token}}}."),
         };
         name.push_str(&value);
     }
     name.push_str(remaining);
     let safe = safe_name(&name);
-    let suffix = if sequence > 1 && !template.contains("{seq}") {
+    let suffix = if sequence > 1 && !has_sequence {
         format!("_{sequence:03}")
     } else {
         String::new()
@@ -271,7 +291,7 @@ pub fn full_path(dest: &Destination, info: &NameInfo<'_>, sequence: u32) -> Resu
 fn safe_name(name: &str) -> String {
     let clean: String = name
         .chars()
-        .take(110)
+        .take(MAX_FILE_STEM)
         .map(|c| {
             if c.is_control() || "<>:\"/\\|?*".contains(c) {
                 '_'
@@ -340,6 +360,7 @@ mod tests {
     fn info() -> NameInfo<'static> {
         NameInfo {
             kind: Kind::Clip,
+            program: "Firefox",
             timestamp: DateTime::parse_from_rfc3339("2025-03-09T17:22:40.123Z")
                 .unwrap()
                 .with_timezone(&Local),
@@ -362,7 +383,7 @@ mod tests {
             path.file_name().unwrap().to_string_lossy(),
             sample
                 .timestamp
-                .format("clip_%Y-%m-%d_%H-%M-%S-%3f_002.mp4")
+                .format("Firefox_clip_%Y-%m-%d_%H-%M_002.mp4")
                 .to_string()
         );
         assert_eq!(
@@ -388,8 +409,47 @@ mod tests {
         };
         assert_eq!(
             full_path(&dest, &info(), 1).unwrap().file_name().unwrap(),
-            "_CON.mp4"
+            "Firefox_CON.mp4"
         );
+    }
+
+    #[test]
+    fn legacy_time_tokens_stop_at_minutes_and_long_templates_keep_unique_names() {
+        let sample = info();
+        let dest = Destination {
+            template: "{time:HH-mm-ss-fff}_{time:HHmmss}_{seq}".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            full_path(&dest, &sample, 2).unwrap().file_name().unwrap(),
+            sample
+                .timestamp
+                .format("Firefox_%H-%M_%H%M_002.mp4")
+                .to_string()
+                .as_str()
+        );
+        let long = Destination {
+            template: format!("{}{{seq}}", "a".repeat(110)),
+            ..Default::default()
+        };
+        let first = full_path(&long, &sample, 1).unwrap();
+        let second = full_path(&long, &sample, 2).unwrap();
+        assert_ne!(first, second);
+        assert!(second
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("_002.mp4"));
+    }
+
+    #[test]
+    fn previous_history_opens_without_program_metadata() {
+        let previous = serde_json::json!({
+            "kind": "Screenshot", "path": "old.png", "timestamp": "2026-11-15T09:40:00Z",
+            "dimensions": "10x10", "duration": null, "upload": "", "link": ""
+        });
+        let entry: Media = serde_json::from_value(previous).unwrap();
+        assert_eq!(entry.program_label(), "Older captures");
     }
 
     #[test]

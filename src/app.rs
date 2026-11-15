@@ -14,7 +14,7 @@ use eframe::egui::{
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use image::RgbaImage;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::PathBuf,
     process::Command,
@@ -28,8 +28,7 @@ use tray_icon::{
 };
 use windows_sys::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0},
-    System::Threading::{CreateEventW, CreateMutexW, GetCurrentProcessId, WaitForSingleObject},
-    UI::WindowsAndMessaging::GetWindowThreadProcessId,
+    System::Threading::{CreateEventW, CreateMutexW, WaitForSingleObject},
 };
 
 const CATEGORIES: [&str; 8] = [
@@ -88,10 +87,10 @@ pub fn run() -> Result<()> {
 
 enum Work {
     Replay(Settings),
-    Recording(Settings),
-    SaveReplay(Settings),
+    Recording(Settings, String),
+    SaveReplay(Settings, String),
     Devices(Settings),
-    Screenshot(RgbaImage, String, Settings, Option<CaptureTrace>),
+    Screenshot(RgbaImage, String, String, Settings, Option<CaptureTrace>),
     Reset,
     Quit,
 }
@@ -111,6 +110,7 @@ enum Report {
         Result<Option<RgbaImage>, String>,
         Settings,
         String,
+        String,
         Option<CaptureTrace>,
     ),
     Thumbnail(PathBuf, Option<RgbaImage>),
@@ -118,6 +118,12 @@ enum Report {
     Done(Result<(), String>),
     Upload(PathBuf, String, Result<String, String>),
     Connection(Result<(), String>),
+}
+
+enum HistoryAction {
+    Open(PathBuf),
+    Reveal(PathBuf),
+    Upload(UploadProfile, PathBuf),
 }
 
 fn worker(root: PathBuf, rx: Receiver<Work>, tx: Sender<Report>, ctx: egui::Context) {
@@ -171,26 +177,26 @@ fn worker(root: PathBuf, rx: Receiver<Work>, tx: Sender<Report>, ctx: egui::Cont
                 current = settings;
                 engine.toggle_replay(&current)
             }
-            Work::Recording(settings) => {
+            Work::Recording(settings, program) => {
                 current = settings;
-                engine.toggle_recording(&current).map(|media| {
+                engine.toggle_recording(&current, program).map(|media| {
                     if let Some(media) = media {
                         send_media((media, None));
                     }
                 })
             }
-            Work::SaveReplay(settings) => {
+            Work::SaveReplay(settings, program) => {
                 current = settings;
                 engine
-                    .save_replay(&current)
+                    .save_replay(&current, program)
                     .map(|media| send_media((media, None)))
             }
             Work::Devices(settings) => engine.inspect_devices(&settings),
-            Work::Screenshot(image, label, settings, trace) => {
+            Work::Screenshot(image, label, program, settings, trace) => {
                 let preview = settings
                     .screenshot_preview
                     .then(|| image::imageops::thumbnail(&image, 500, 340));
-                let saved = capture::save(image, &label, &settings);
+                let saved = capture::save(image, &label, program, &settings);
                 if let Some(trace) = trace {
                     trace.stage(if saved.is_ok() {
                         "file_saved"
@@ -316,6 +322,8 @@ struct App {
     upload_active: Vec<PathBuf>,
     file_category: Kind,
     filter: Option<Kind>,
+    history_programs: bool,
+    program_filter: Option<String>,
     quit: bool,
     theme: Option<bool>,
     window_maximized: bool,
@@ -337,6 +345,12 @@ impl App {
                 message = format!("{error:#}");
                 Settings::default()
             });
+        for folder in &mut settings.folders {
+            folder.template = folder
+                .template
+                .replace("{time:HH-mm-ss-fff}", "{time:HH-mm}")
+                .replace("{time:HHmmss}", "{time:HHmm}");
+        }
         for profile in &mut settings.profiles {
             match uploads::read_secret(&format!("KumaCapture/destination/{}", profile.id)) {
                 Ok(Some(endpoint)) => profile.endpoint = endpoint,
@@ -384,6 +398,8 @@ impl App {
             upload_active: Vec::new(),
             file_category: Kind::Screenshot,
             filter: None,
+            history_programs: false,
+            program_filter: None,
             quit: false,
             theme: None,
             window_maximized: false,
@@ -518,11 +534,11 @@ impl App {
                     }
                     self.thumbnails.insert(path, texture);
                 }
-                Report::Captured(result, settings, label, trace) => {
+                Report::Captured(result, settings, label, program, trace) => {
                     self.snipping = false;
                     match result {
                         Ok(Some(image)) => {
-                            self.send(Work::Screenshot(image, label, settings, trace))
+                            self.send(Work::Screenshot(image, label, program, settings, trace))
                         }
                         Ok(None) => {}
                         Err(error) => self.notice(error, true),
@@ -630,20 +646,22 @@ impl App {
             return;
         }
         match action {
-            4 => self.send(Work::SaveReplay(settings)),
+            4 => {
+                let program = capture::program_name(capture::capture_window(self.previous_window));
+                self.send(Work::SaveReplay(settings, program));
+            }
             5 => self.send(Work::Replay(settings)),
-            6 => self.send(Work::Recording(settings)),
+            6 => {
+                let program = capture::program_name(capture::capture_window(self.previous_window));
+                self.send(Work::Recording(settings, program));
+            }
             0..=3 => {
+                let window = capture::capture_window(self.previous_window);
                 let target = match action {
                     0 => Ok(("region", String::new(), "Region".into())),
-                    1 => {
-                        let window = if self.previous_window == 0 {
-                            capture::foreground() as usize
-                        } else {
-                            self.previous_window
-                        };
-                        Ok(("window", window.to_string(), "Window".into()))
-                    }
+                    1 => (!window.is_null())
+                        .then(|| ("window", (window as usize).to_string(), "Window".into()))
+                        .context("Open the window you want to capture, then try again."),
                     2 => capture::selected_display(&settings.monitor).map(|display| {
                         let r = display.rect;
                         (
@@ -670,6 +688,7 @@ impl App {
                         return;
                     }
                 };
+                let program = capture::program_name(window);
                 self.snipping = true;
                 desktop::dismiss_preview();
                 let tx = self.report_sender.clone();
@@ -693,7 +712,7 @@ impl App {
                             Err(_) => "capture_failed",
                         });
                     }
-                    let _ = tx.send(Report::Captured(result, settings, label, trace));
+                    let _ = tx.send(Report::Captured(result, settings, label, program, trace));
                     ctx.request_repaint();
                 });
             }
@@ -702,13 +721,8 @@ impl App {
     }
 
     fn inputs(&mut self, ctx: &egui::Context) {
-        let hwnd = capture::foreground();
-        let mut pid = 0;
-        if !hwnd.is_null() {
-            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-            if pid != 0 && pid != unsafe { GetCurrentProcessId() } {
-                self.previous_window = hwnd as usize;
-            }
+        if let Some(window) = capture::foreground() {
+            self.previous_window = window as usize;
         }
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == HotKeyState::Pressed && self.hotkey_recorder.is_none() {
@@ -882,6 +896,65 @@ impl App {
                 ui.selectable_value(&mut self.history_grid, true, "Grid");
             });
         });
+        ui.horizontal(|ui| {
+            let was_grouped = self.history_programs;
+            ui.selectable_value(&mut self.history_programs, false, "All captures");
+            ui.selectable_value(&mut self.history_programs, true, "Programs");
+            if was_grouped != self.history_programs {
+                self.filter = None;
+            }
+        });
+        let mut programs = BTreeMap::<String, (&str, [usize; 3])>::new();
+        if self.history_programs {
+            for entry in &self.history {
+                let label = entry.program_label();
+                let (_, counts) = programs
+                    .entry(label.to_lowercase())
+                    .or_insert((label, [0; 3]));
+                counts[entry.kind.id()] += 1;
+            }
+            if self
+                .program_filter
+                .as_ref()
+                .is_some_and(|key| !programs.contains_key(key))
+            {
+                self.program_filter = None;
+            }
+            if let Some((program, _)) = self
+                .program_filter
+                .as_ref()
+                .and_then(|key| programs.get(key))
+            {
+                ui.horizontal(|ui| {
+                    if ui.button("All programs").clicked() {
+                        self.program_filter = None;
+                        self.filter = None;
+                    }
+                    ui.label(design::heading(program, 20.));
+                });
+            }
+            if self.program_filter.is_none() && !programs.is_empty() {
+                egui::ScrollArea::vertical()
+                    .id_salt("history programs")
+                    .show(ui, |ui| {
+                        for (key, (program, counts)) in programs {
+                            let label = format!(
+                                "{program}   ·   {} screenshots   ·   {} clips   ·   {} recordings",
+                                counts[0], counts[1], counts[2]
+                            );
+                            if ui
+                                .add_sized([ui.available_width(), 36.], egui::Button::new(label))
+                                .clicked()
+                            {
+                                self.program_filter = Some(key);
+                                self.filter = None;
+                                self.selected_capture = None;
+                            }
+                        }
+                    });
+                return;
+            }
+        }
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.filter, None, "All");
             for (kind, title) in [
@@ -898,6 +971,13 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, entry)| self.filter.is_none_or(|kind| entry.kind == kind))
+            .filter(|(_, entry)| {
+                !self.history_programs
+                    || self
+                        .program_filter
+                        .as_ref()
+                        .is_none_or(|key| entry.program_label().to_lowercase() == *key)
+            })
             .map(|(i, _)| i)
             .collect::<Vec<_>>();
         if matches.is_empty() {
@@ -947,18 +1027,18 @@ impl App {
         {
             self.selected_capture = Some(self.history[matches[0]].path.clone());
         }
-        let mut upload = None;
-        let mut open = None;
-        let mut show = None;
+        let mut action = None;
         let mut bearing = self.selected_capture.clone();
-        let mut column_widths = [ui.available_width() - 240., 220.];
-        if column_widths[0] < 330. {
-            column_widths = [ui.available_width(), ui.available_width()];
-        }
-        let stack = column_widths[0] == column_widths[1];
+        let width = ui.available_width();
+        let stack = width < 550.;
+        let column_widths = if stack {
+            [width, width]
+        } else {
+            [width - 220. - ui.spacing().item_spacing.x, 220.]
+        };
         let mut listing = |ui: &mut egui::Ui,
                            bearing: &mut Option<PathBuf>,
-                           opened: &mut Option<PathBuf>| {
+                           action: &mut Option<HistoryAction>| {
             ui.set_width(column_widths[0]);
             let columns = if self.history_grid && ui.available_width() > 350. {
                 2
@@ -968,7 +1048,18 @@ impl App {
             let rows = matches.len().div_ceil(columns);
             let row_height = if self.history_grid { 144. } else { 55. };
             egui::ScrollArea::vertical()
-                .id_salt("history captures")
+                .id_salt((
+                    "history captures",
+                    self.history_programs,
+                    &self.program_filter,
+                    self.filter.map(Kind::id),
+                    self.history_grid,
+                ))
+                .max_height(if stack {
+                    (ui.available_height() - 120.).max(110.)
+                } else {
+                    ui.available_height()
+                })
                 .show_rows(ui, row_height, rows, |ui, range| {
                     for row in range {
                         ui.columns(columns, |cells| {
@@ -978,8 +1069,11 @@ impl App {
                                 };
                                 let entry = &self.history[index];
                                 let selected = bearing.as_ref() == Some(&entry.path);
-                                let (rect, response) = cell.allocate_exact_size(
-                                    Vec2::new(cell.available_width(), row_height),
+                                let (_, rect) = cell
+                                    .allocate_space(Vec2::new(cell.available_width(), row_height));
+                                let response = cell.interact(
+                                    rect,
+                                    cell.id().with(&entry.path),
                                     Sense::click(),
                                 );
                                 let name =
@@ -1105,22 +1199,69 @@ impl App {
                                     galley,
                                     p.ink,
                                 );
-                                if response.clicked() {
+                                if response.secondary_clicked() || response.clicked() {
                                     *bearing = Some(entry.path.clone());
                                 }
-                                if response.double_clicked() {
-                                    *opened = Some(entry.path.clone());
+                                if response.clicked() {
+                                    *action = Some(HistoryAction::Open(entry.path.clone()));
                                 }
+                                response.context_menu(|ui| {
+                                    ui.set_min_width(155.);
+                                    if ui.button("Open").clicked() {
+                                        *action = Some(HistoryAction::Open(entry.path.clone()));
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Copy path").clicked() {
+                                        ui.ctx()
+                                            .copy_text(entry.path.to_string_lossy().into_owned());
+                                        ui.close_menu();
+                                    }
+                                    if !entry.link.is_empty() && ui.button("Copy link").clicked() {
+                                        ui.ctx().copy_text(entry.link.clone());
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Show in folder").clicked() {
+                                        *action = Some(HistoryAction::Reveal(entry.path.clone()));
+                                        ui.close_menu();
+                                    }
+                                    if !self.upload_active.contains(&entry.path)
+                                        && !self.settings.profiles.is_empty()
+                                    {
+                                        ui.separator();
+                                        if let Some(profile) = self
+                                            .settings
+                                            .profiles
+                                            .iter()
+                                            .find(|profile| profile.id == entry.upload_profile)
+                                            .filter(|_| entry.upload.starts_with("Failed:"))
+                                        {
+                                            if ui.button("Retry upload").clicked() {
+                                                *action = Some(HistoryAction::Upload(
+                                                    profile.clone(),
+                                                    entry.path.clone(),
+                                                ));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                        ui.menu_button("Send to…", |ui| {
+                                            for profile in &self.settings.profiles {
+                                                if ui.button(&profile.name).clicked() {
+                                                    *action = Some(HistoryAction::Upload(
+                                                        profile.clone(),
+                                                        entry.path.clone(),
+                                                    ));
+                                                    ui.close_menu();
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
                             }
                         });
                     }
                 });
         };
-        let detail = |ui: &mut egui::Ui,
-                      selected: Option<&PathBuf>,
-                      upload: &mut Option<(UploadProfile, PathBuf)>,
-                      open: &mut Option<PathBuf>,
-                      show: &mut Option<PathBuf>| {
+        let detail = |ui: &mut egui::Ui, selected: Option<&PathBuf>| {
             ui.set_width(column_widths[1]);
             let Some(entry) = self
                 .history
@@ -1135,7 +1276,8 @@ impl App {
                 ui.label(entry.path.file_name().unwrap_or_default().to_string_lossy());
                 ui.label(
                     RichText::new(format!(
-                        "{}\n{}",
+                        "{}\n{}  ·  {}",
+                        entry.program_label(),
                         entry.timestamp.format("%b %d, %H:%M"),
                         entry.dimensions
                     ))
@@ -1144,71 +1286,46 @@ impl App {
                 if !entry.upload.is_empty() {
                     ui.label(&entry.upload);
                 }
-                ui.add_space(8.);
-                if design::command(ui, "Open", "", design::Mark::Photo, false, true) {
-                    *open = Some(entry.path.clone());
-                }
-                if ui.button("Copy path").clicked() {
-                    ui.ctx()
-                        .copy_text(entry.path.to_string_lossy().into_owned());
-                }
-                if !entry.link.is_empty() && ui.button("Copy link").clicked() {
-                    ui.ctx().copy_text(entry.link.clone());
-                }
-                if ui.button("Show in folder").clicked() {
-                    *show = Some(entry.path.clone());
-                }
-                if !self.upload_active.contains(&entry.path) {
-                    if entry.upload.starts_with("Failed:") {
-                        if let Some(profile) = self
-                            .settings
-                            .profiles
-                            .iter()
-                            .find(|profile| profile.id == entry.upload_profile)
-                        {
-                            if ui.button("Retry upload").clicked() {
-                                *upload = Some((profile.clone(), entry.path.clone()));
-                            }
-                        }
-                    }
-                    if !self.settings.profiles.is_empty() {
-                        ui.menu_button("Send to…", |ui| {
-                            for profile in &self.settings.profiles {
-                                if ui.button(&profile.name).clicked() {
-                                    *upload = Some((profile.clone(), entry.path.clone()));
-                                    ui.close_menu();
-                                }
-                            }
-                        });
-                    }
-                }
             });
         };
         if stack {
-            listing(ui, &mut bearing, &mut open);
-            detail(ui, bearing.as_ref(), &mut upload, &mut open, &mut show);
+            listing(ui, &mut bearing, &mut action);
+            detail(ui, bearing.as_ref());
         } else {
+            let height = ui.available_height();
             ui.horizontal_top(|ui| {
-                listing(ui, &mut bearing, &mut open);
-                detail(ui, bearing.as_ref(), &mut upload, &mut open, &mut show);
+                for (index, width) in column_widths.into_iter().enumerate() {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(width, height),
+                        Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            if index == 0 {
+                                listing(ui, &mut bearing, &mut action);
+                            } else {
+                                detail(ui, bearing.as_ref());
+                            }
+                        },
+                    );
+                }
             });
         }
         self.selected_capture = bearing;
-        if let Some(path) = open {
-            if let Err(error) = Command::new("explorer").arg(path).spawn() {
-                self.notice(error.to_string(), true);
+        match action {
+            Some(HistoryAction::Open(path)) => {
+                if let Err(error) = desktop::open_capture(&path) {
+                    self.notice(error.to_string(), true);
+                }
             }
-        }
-        if let Some(path) = show {
-            if let Err(error) = Command::new("explorer")
-                .arg(format!("/select,{}", path.display()))
-                .spawn()
-            {
-                self.notice(error.to_string(), true);
+            Some(HistoryAction::Reveal(path)) => {
+                if let Err(error) = Command::new("explorer")
+                    .arg(format!("/select,{}", path.display()))
+                    .spawn()
+                {
+                    self.notice(error.to_string(), true);
+                }
             }
-        }
-        if let Some((profile, path)) = upload {
-            self.upload(profile, path, ui.ctx());
+            Some(HistoryAction::Upload(profile, path)) => self.upload(profile, path, ui.ctx()),
+            None => {}
         }
     }
 
@@ -1687,7 +1804,10 @@ impl App {
         });
         ui.label("Filename template");
         ui.add(egui::TextEdit::singleline(&mut folder.template).desired_width(360.0));
-        ui.small("{type}  {date:yyyy-MM-dd}  {time:HH-mm-ss-fff}  {monitor}  {resolution}  {duration}  {seq}");
+        ui.small("Kuma adds the foreground program before the template.");
+        ui.small(
+            "{type}  {date:yyyy-MM-dd}  {time:HH-mm}  {monitor}  {resolution}  {duration}  {seq}",
+        );
         let ext = if kind != Kind::Screenshot {
             "mp4"
         } else if self.settings.screenshot_jpeg {
@@ -1697,6 +1817,7 @@ impl App {
         };
         let example = NameInfo {
             kind,
+            program: "Chrome",
             timestamp: Local::now(),
             monitor: "Display 1",
             dimensions: "1920x1080",
@@ -1913,9 +2034,7 @@ impl eframe::App for App {
                 Page::Capture => {
                     egui::ScrollArea::vertical().show(ui, |ui| self.capture_view(ui));
                 }
-                Page::History => {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.history_view(ui));
-                }
+                Page::History => self.history_view(ui),
                 Page::Settings => self.settings_view(ui),
             });
         if self.pending.is_some() {

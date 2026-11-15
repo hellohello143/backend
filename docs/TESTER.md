@@ -1,4 +1,4 @@
-# Kuma Capture 0.4.0 Windows test checklist
+# Kuma Capture 0.4.1 Windows test checklist
 
 1. Start on Windows 11 x64. Run `KumaCaptureSetup.exe`, then open Kuma Capture from Start. Alternatively, extract the whole portable ZIP to a writable folder. The portable build requires the Microsoft Visual C++ x64 runtime if it is absent on the PC.
 2. Open region capture from the tray or a hotkey with Kuma hidden. Use ShareX’s crosshair, selection, window detection and annotation toolbar. Reproduce the old flashing case, drag across mixed-DPI monitors, then check Escape, cursor inclusion, and capture from the three other screenshot shortcuts.
@@ -17,6 +17,13 @@
 - Review Capture, History (grid and list), Settings, the bottom-right preview, and the updater at 100%, 125%, and 150% Windows display scaling. Check both themes, a 720 × 500 window, and keyboard-only navigation with a visible focus ring.
 - Save a real PNG and MP4 and confirm the previews appear in History. Select a capture and verify Open, Copy path, Show in folder, and Send to. Test upload status and retry on the selected item.
 - In the updater, verify checking, download progress, waiting, installing, and completion. Repeat with the app busy and with the network unavailable.
+
+## Program names and History
+
+- Focus two different apps and capture a region screenshot and a replay from each. Check that names use the focused program and end with minutes. Save two captures of the same type in one minute and check that both files exist. Try an existing template that used seconds and a long template with `{seq}`.
+- Start a recording while one app is focused, switch apps, and stop it. Check that its name uses the app from the start of the recording. Try a capture from the tray and a capture from the desktop.
+- In **History → Programs**, open each program and switch between **Screenshots** and **Clips**. Captures made before 0.4.1 should appear under **Older captures**. Test list and grid modes.
+- Hover over a thumbnail, then right-click near the edge of the window. Confirm that hovering shows no action bar, right-click opens a compact vertical menu near the pointer, and left-click opens the file in its Windows default app. Check Copy path, Show in folder, and Send to when configured.
 
 ## Fullscreen screenshot reproduction
 
