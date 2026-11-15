@@ -7,6 +7,8 @@
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="Avalonia.Base" HintPath="$(ShareXRuntime)/Avalonia.Base.dll" Private="false" />
+    <Reference Include="Avalonia.Controls" HintPath="$(ShareXRuntime)/Avalonia.Controls.dll" Private="false" />
     <Reference Include="ShareX.Avalonia" HintPath="$(ShareXRuntime)/ShareX.Avalonia.dll" Private="false" />
     <Reference Include="ShareX.HelpersLib" HintPath="$(ShareXRuntime)/ShareX.HelpersLib.dll" Private="false" />
     <Reference Include="ShareX.ScreenCaptureLib" HintPath="$(ShareXRuntime)/ShareX.ScreenCaptureLib.dll" Private="false" />

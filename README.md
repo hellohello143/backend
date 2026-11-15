@@ -22,6 +22,12 @@
   <img alt="GPL 3.0 or later" src="https://img.shields.io/badge/License-GPL--3.0%2B-c86e80">
 </p>
 
+## The 0.4 desktop redesign
+
+An illustrated Capture workspace, light and dark themes, a thumbnail History with a detail panel, and a standalone updater with download and install progress. The region selector is powered by ShareX.
+
+![Kuma Capture light theme with replay armed](docs/kuma-capture-preview.png)
+
 ## For the moments you almost missed
 
 **Instant replay.** Arm a rolling buffer and save the last 15, 30, 60, or 120 seconds with a hotkey. Save another clip whenever you want. The buffer keeps running.
@@ -45,7 +51,7 @@ Look for these files under [GitHub Releases](../../releases) when a build is pub
 | **`KumaCaptureSetup.exe`** | Recommended on a clean PC. Run the installer, then open Kuma Capture from Start. The installer bundles OBS, rclone, and the Microsoft Visual C++ runtime. |
 | **`KumaCapture-Windows-x64.zip`** | Extract the whole ZIP to a writable folder, then run `KumaCapture.exe`. The portable package requires the Microsoft Visual C++ x64 runtime. |
 
-> **Tester builds** · These Windows builds are unsigned. See the release checklist for hands-on verification.ndows x64 build and four automated tests passed. Fullscreen hotkeys, audio sync, multi-monitor behavior, and live uploads still need hands-on Windows testing. The tester build is unsigned.
+> **Tester builds** · These Windows builds are unsigned. See the release checklist for hands-on verification.
 
 ### Updating an existing installation
 

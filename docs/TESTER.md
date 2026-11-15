@@ -1,10 +1,10 @@
-# Kuma Capture 0.3.0 Windows test checklist
+# Kuma Capture 0.4.0 Windows test checklist
 
 1. Start on Windows 11 x64. Run `KumaCaptureSetup.exe`, then open Kuma Capture from Start. Alternatively, extract the whole portable ZIP to a writable folder. The portable build requires the Microsoft Visual C++ x64 runtime if it is absent on the PC.
 2. Open region capture from the tray or a hotkey with Kuma hidden. Use ShareX’s crosshair, selection, window detection and annotation toolbar. Reproduce the old flashing case, drag across mixed-DPI monitors, then check Escape, cursor inclusion, and capture from the three other screenshot shortcuts.
 3. Save a screenshot and verify the bottom-right thumbnail opens the file on click and dismisses on × or after a few seconds. Take a second screenshot while the first preview is up and check that the preview stays out of the capture. Disable Preview and Capture chime independently in Screenshots and verify each toggle.
 4. Click a shortcut in Settings and record F8, Ctrl+Shift+K, and a conflicting chord. Verify Escape cancels, Clear disables the binding, a conflict preserves the old binding, and shortcuts persist after restarting.
-5. Install 0.2.0, then run the new standalone updater. Quit the old version when prompted and confirm setup upgrades the previous directory, including a custom directory, with settings and history intact. Run the updater again and verify it reports up to date. On a newer installed app, verify a later update requests a graceful shutdown and reopens Kuma when finished.
+5. Install 0.3.0, then run the new standalone updater. Quit the old version when prompted and confirm setup upgrades the previous directory, including a custom directory, with settings and history intact. Run the updater again and verify it reports up to date. On a newer installed app, verify a later update requests a graceful shutdown and reopens Kuma when finished.
 6. Select a display and arm replay. Save one early clip and two consecutive clips after the buffer fills. Confirm that the buffer stays armed, replay files play, and only the selected display is recorded. Trigger the same hotkey while a fullscreen app has focus.
 7. Test manual recording alongside replay. Check video resolution and audio sync in the output. Toggle the mic and desktop audio independently and confirm the meter follows the selected device. Try an unavailable hardware encoder and check that software fallback succeeds.
 8. Disconnect the selected display with replay armed. Confirm that capture pauses and Kuma displays an interruption. Test reconnecting, changing monitors and approving a replay reset.
@@ -12,4 +12,22 @@
 10. Save while offline. For each provider you have a test account for, configure a test destination, upload manually and automatically, then force a failure and retry. Confirm the local file survives and the remote file is private according to the provider's permissions.
 11. Test closing to the tray, restoring, and quitting. Use an empty test account and nonsensitive footage. For a failure, capture the Kuma status text, Windows version, GPU/driver, reproduction steps, and relevant OBS log excerpts after removing paths or secrets. OBS logs are under `obs/config/obs-studio/logs` beside Kuma Capture.
 
-The downloadable binaries are unsigned prerelease builds. A Linux cross-build and automated checks are available. The hands-on Windows checks above are pending.
+## Redesign checks
+
+- Review Capture, History (grid and list), Settings, the bottom-right preview, and the updater at 100%, 125%, and 150% Windows display scaling. Check both themes, a 720 × 500 window, and keyboard-only navigation with a visible focus ring.
+- Save a real PNG and MP4 and confirm the previews appear in History. Select a capture and verify Open, Copy path, Show in folder, and Send to. Test upload status and retry on the selected item.
+- In the updater, verify checking, download progress, waiting, installing, and completion. Repeat with the app busy and with the network unavailable.
+
+## Fullscreen screenshot reproduction
+
+Enable **Settings → Screenshots → Advanced → Log screenshot diagnostics**. On Windows 11, use an unprotected game or test scene with a moving element. Run each of these display modes and keep the game focused while pressing the shortcuts.
+
+| Display mode | Exercise | Record |
+| --- | --- | --- |
+| Windowed | Capture region, window, monitor, and all screens | Hotkey receipt, selector, recent frame, and saved file |
+| Borderless fullscreen | Repeat on one display and a mixed-DPI dual-display setup | Any dark, stale, missing, or offset frame |
+| True exclusive fullscreen | Repeat with a title that supports exclusive mode. Record the Fullscreen Optimizations setting. | Whether opening the selector changes focus and whether the original frame is in the output |
+
+If the shortcut produces no capture, compare the tray action and check for `hotkey_received`. A saved file with bad pixels points to the frame or display path. Compare `frame_requested`, `frame_acquired`, `overlay_requested`, `overlay_visible` when detected, and `file_saved`. The log contains only stages and timings. It cannot tell whether the acquired image was correct. Disable diagnostics when done.
+
+The binaries are unsigned prereleases. CI checks the Windows build, capture bridge loading, and installer contents. Visual previews are rendered against sample state. Interactive Windows fullscreen, mixed-DPI, and upgrade checks remain hands-on tests.

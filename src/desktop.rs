@@ -138,6 +138,7 @@ struct Preview {
     generation: usize,
     width: i32,
     height: i32,
+    dark: bool,
 }
 
 pub fn dismiss_preview() {
@@ -152,7 +153,7 @@ pub fn dismiss_preview() {
     }
 }
 
-pub fn show_preview(image: RgbaImage, path: PathBuf) {
+pub fn show_preview(image: RgbaImage, path: PathBuf, dark: bool) {
     let generation = PREVIEW_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     std::thread::spawn(move || unsafe {
         SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -166,7 +167,8 @@ pub fn show_preview(image: RgbaImage, path: PathBuf) {
             path,
             generation,
             width: 268,
-            height: 176,
+            height: 202,
+            dark,
         });
         let window = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -174,9 +176,9 @@ pub fn show_preview(image: RgbaImage, path: PathBuf) {
             wide("Kuma Capture screenshot preview").as_ptr(),
             WS_POPUP | WS_BORDER,
             area.right - 286,
-            area.bottom - 194,
+            area.bottom - 220,
             268,
-            176,
+            202,
             null_mut(),
             null_mut(),
             GetModuleHandleW(null()),
@@ -193,7 +195,7 @@ pub fn show_preview(image: RgbaImage, path: PathBuf) {
         SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
         let dpi = GetDpiForWindow(window).max(96) as i32;
         preview.width = 268 * dpi / 96;
-        preview.height = 176 * dpi / 96;
+        preview.height = 202 * dpi / 96;
         let gap = 18 * dpi / 96;
         SetWindowPos(
             window,
@@ -241,7 +243,7 @@ unsafe extern "system" fn preview_proc(
         WM_LBUTTONUP => {
             let x = (lparam as u16 as i16) as i32;
             let y = ((lparam >> 16) as u16 as i16) as i32;
-            let header = (state.height * 34 / 176).max(28);
+            let header = (state.height * 42 / 202).max(32);
             if x < state.width - header || y > header {
                 let _ = std::process::Command::new("explorer.exe")
                     .arg(&state.path)
@@ -259,12 +261,25 @@ unsafe extern "system" fn preview_proc(
             let dc = BeginPaint(window, &mut paint);
             let mut area: RECT = std::mem::zeroed();
             GetClientRect(window, &mut area);
-            let cream = CreateSolidBrush(0x00EAF3FF);
+            let cream = CreateSolidBrush(if state.dark { 0x002A2637 } else { 0x00F1F8FF });
             FillRect(dc, &area, cream);
             DeleteObject(cream);
-            let header = (state.height * 34 / 176).max(28);
+            let header = (state.height * 42 / 202).max(32);
+            let header_bg = CreateSolidBrush(if state.dark { 0x00463552 } else { 0x00DACFF6 });
+            FillRect(
+                dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: area.right,
+                    bottom: header,
+                },
+                header_bg,
+            );
+            DeleteObject(header_bg);
+            paint_preview_bear(dc, header);
             let mut text_area = RECT {
-                left: 10,
+                left: header,
                 top: 0,
                 right: area.right - header,
                 bottom: header,
@@ -272,7 +287,7 @@ unsafe extern "system" fn preview_proc(
             let font = GetStockObject(DEFAULT_GUI_FONT);
             let old_font = SelectObject(dc, font);
             SetBkMode(dc, TRANSPARENT as i32);
-            SetTextColor(dc, 0x002B3657);
+            SetTextColor(dc, if state.dark { 0x00F1F8FF } else { 0x001F2234 });
             DrawTextW(
                 dc,
                 wide("Screenshot saved").as_ptr(),
@@ -300,13 +315,14 @@ unsafe extern "system" fn preview_proc(
             let width = ((w as f32 * scale) as i32).max(1);
             let height = ((h as f32 * scale) as i32).max(1);
             let left = (area.right - width) / 2;
+            let top = header + (area.bottom - header - height) / 2;
             state.image.paint(
                 dc,
                 RECT {
                     left,
-                    top: header,
+                    top,
                     right: left + width,
-                    bottom: header + height,
+                    bottom: top + height,
                 },
             );
             EndPaint(window, &paint);
@@ -314,4 +330,132 @@ unsafe extern "system" fn preview_proc(
         }
         _ => DefWindowProcW(window, message, wparam, lparam),
     }
+}
+
+unsafe fn paint_preview_bear(dc: HDC, height: i32) {
+    let at = |value: i32| value * height / 42;
+    let oval = |x1, y1, x2, y2, color| {
+        let brush = CreateSolidBrush(color);
+        let old_brush = SelectObject(dc, brush);
+        let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+        Ellipse(dc, at(x1), at(y1), at(x2), at(y2));
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(brush);
+    };
+    oval(12, 11, 20, 19, 0x004876BC);
+    oval(26, 11, 34, 19, 0x004876BC);
+    oval(13, 13, 19, 18, 0x00DACFF6);
+    oval(27, 13, 33, 18, 0x00DACFF6);
+    oval(12, 14, 34, 31, 0x004876BC);
+    oval(17, 20, 19, 22, 0x001F2234);
+    oval(27, 20, 29, 22, 0x001F2234);
+    oval(19, 23, 27, 29, 0x00F1F8FF);
+    oval(21, 24, 25, 26, 0x001F2234);
+}
+
+/// Explorer's thumbnail provider can decode recordings without opening a player.
+pub fn thumbnail(path: &std::path::Path) -> Option<RgbaImage> {
+    use std::{ffi::c_void, os::windows::ffi::OsStrExt};
+    use windows_sys::{
+        core::GUID,
+        Win32::{
+            Foundation::SIZE,
+            System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+            UI::Shell::SHCreateItemFromParsingName,
+        },
+    };
+
+    #[repr(C)]
+    struct ImageFactory {
+        vtable: *const ImageFactoryVtable,
+    }
+    #[repr(C)]
+    struct ImageFactoryVtable {
+        query_interface: usize,
+        add_ref: usize,
+        release: unsafe extern "system" fn(*mut ImageFactory) -> u32,
+        get_image: unsafe extern "system" fn(*mut ImageFactory, SIZE, u32, *mut HBITMAP) -> i32,
+    }
+
+    const IMAGE_FACTORY: GUID = GUID::from_u128(0xbcc18b79_ba16_442f_80c4_8a59c30c463b);
+    const THUMBNAIL_ONLY: u32 = 0x08;
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() }
+        }
+    }
+
+    unsafe {
+        if CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) < 0 {
+            return None;
+        }
+        let _apartment = Apartment;
+        let path: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+        let mut item: *mut c_void = null_mut();
+        if SHCreateItemFromParsingName(path.as_ptr(), null_mut(), &IMAGE_FACTORY, &mut item) < 0
+            || item.is_null()
+        {
+            return None;
+        }
+        let factory = item.cast::<ImageFactory>();
+        let vtable = &*(*factory).vtable;
+        let mut bitmap = null_mut();
+        let result = (vtable.get_image)(
+            factory,
+            SIZE { cx: 320, cy: 180 },
+            THUMBNAIL_ONLY,
+            &mut bitmap,
+        );
+        (vtable.release)(factory);
+        if result < 0 || bitmap.is_null() {
+            return None;
+        }
+        let image = read_bitmap(bitmap);
+        DeleteObject(bitmap);
+        image
+    }
+}
+
+unsafe fn read_bitmap(bitmap: HBITMAP) -> Option<RgbaImage> {
+    let mut dimensions: BITMAP = std::mem::zeroed();
+    let size = std::mem::size_of::<BITMAP>() as i32;
+    if GetObjectW(bitmap, size, (&mut dimensions as *mut BITMAP).cast()) != size {
+        return None;
+    }
+    let (width, height) = (dimensions.bmWidth, dimensions.bmHeight);
+    if !(1..=1024).contains(&width) || !(1..=1024).contains(&height) {
+        return None;
+    }
+    let dc = CreateCompatibleDC(null_mut());
+    if dc.is_null() {
+        return None;
+    }
+    let mut info: BITMAPINFO = std::mem::zeroed();
+    info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    let mut pixels = vec![0; width as usize * height as usize * 4];
+    let lines = GetDIBits(
+        dc,
+        bitmap,
+        0,
+        height as u32,
+        pixels.as_mut_ptr().cast(),
+        &mut info,
+        DIB_RGB_COLORS,
+    );
+    DeleteDC(dc);
+    if lines != height {
+        return None;
+    }
+    for rgba in pixels.chunks_exact_mut(4) {
+        rgba.swap(0, 2);
+        rgba[3] = 255;
+    }
+    RgbaImage::from_raw(width as u32, height as u32, pixels)
 }

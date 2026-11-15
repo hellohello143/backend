@@ -92,6 +92,10 @@ def main():
             shutil.copyfileobj(source, target)
     for name in ["TESTER.md", "THIRD-PARTY.md", "ShareX-LICENSE.txt", "rclone-LICENSE.txt"]:
         shutil.copy2(ROOT / "docs" / name, stage / name)
+    licenses = stage / "font-licenses"
+    licenses.mkdir()
+    for license_file in (ROOT / "assets" / "fonts").glob("*-OFL.txt"):
+        shutil.copy2(license_file, licenses / license_file.name)
     portable = output / "KumaCapture-Windows-x64.zip"
     write_zip(stage, portable)
     # Microsoft's redistributable is included in setup for clean Windows installs.

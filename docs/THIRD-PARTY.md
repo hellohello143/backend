@@ -5,3 +5,5 @@
 - The optional storage worker is rclone v1.76.0 (MIT). Its license is included. [Exact rclone source and build instructions](https://github.com/rclone/rclone/tree/v1.76.0).
 - The installer uses NSIS and includes the Microsoft Visual C++ x64 redistributable. See `packaging/dependencies.json` for exact downloads and checksums. Rust libraries are pinned in `Cargo.lock`.
 - The illustrated bear is original app artwork. Kuma Capture is an independent project.
+
+- Instrument Sans and Bricolage Grotesque are distributed under the SIL Open Font License. Their license texts are bundled with the installer and live in `assets/fonts`.

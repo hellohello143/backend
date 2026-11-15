@@ -5,7 +5,11 @@ mod app;
 #[cfg(windows)]
 mod capture;
 #[cfg(windows)]
+mod capture_trace;
+#[cfg(windows)]
 mod chrome;
+#[cfg(windows)]
+mod design;
 #[cfg(windows)]
 mod desktop;
 mod model;

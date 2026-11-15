@@ -1,5 +1,6 @@
+use crate::capture_trace::CaptureTrace;
 use crate::{
-    capture, desktop,
+    capture, design, desktop,
     model::{self, DateFolders, Kind, Media, NameInfo, Settings, UploadProfile, ACTIONS},
     obs::Engine,
     shortcut, uploads,
@@ -13,7 +14,7 @@ use eframe::egui::{
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use image::RgbaImage;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
     process::Command,
@@ -41,10 +42,6 @@ const CATEGORIES: [&str; 8] = [
     "Uploads",
     "Appearance",
 ];
-const BROWN: Color32 = Color32::from_rgb(88, 55, 43);
-const HONEY: Color32 = Color32::from_rgb(191, 116, 60);
-const PINK: Color32 = Color32::from_rgb(252, 210, 213);
-const PAPER: Color32 = Color32::from_rgb(255, 248, 237);
 
 pub fn run() -> Result<()> {
     // A single process owns the tray, settings files and private OBS profile.
@@ -70,7 +67,7 @@ pub fn run() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Kuma Capture")
-            .with_inner_size([980.0, 690.0])
+            .with_inner_size([980.0, 620.0])
             .with_min_inner_size([720.0, 500.0])
             .with_decorations(false)
             .with_icon(egui::IconData {
@@ -94,7 +91,7 @@ enum Work {
     Recording(Settings),
     SaveReplay(Settings),
     Devices(Settings),
-    Screenshot(RgbaImage, String, Settings),
+    Screenshot(RgbaImage, String, Settings, Option<CaptureTrace>),
     Reset,
     Quit,
 }
@@ -110,7 +107,13 @@ struct CaptureStatus {
 
 enum Report {
     Saved(Media, Option<String>),
-    Captured(Result<Option<RgbaImage>, String>, Settings, String),
+    Captured(
+        Result<Option<RgbaImage>, String>,
+        Settings,
+        String,
+        Option<CaptureTrace>,
+    ),
+    Thumbnail(PathBuf, Option<RgbaImage>),
     Status(CaptureStatus),
     Done(Result<(), String>),
     Upload(PathBuf, String, Result<String, String>),
@@ -183,16 +186,24 @@ fn worker(root: PathBuf, rx: Receiver<Work>, tx: Sender<Report>, ctx: egui::Cont
                     .map(|media| send_media((media, None)))
             }
             Work::Devices(settings) => engine.inspect_devices(&settings),
-            Work::Screenshot(image, label, settings) => {
+            Work::Screenshot(image, label, settings, trace) => {
                 let preview = settings
                     .screenshot_preview
                     .then(|| image::imageops::thumbnail(&image, 500, 340));
-                capture::save(image, &label, &settings).map(|(media, warning)| {
+                let saved = capture::save(image, &label, &settings);
+                if let Some(trace) = trace {
+                    trace.stage(if saved.is_ok() {
+                        "file_saved"
+                    } else {
+                        "file_save_failed"
+                    });
+                }
+                saved.map(|(media, warning)| {
                     if settings.screenshot_sound {
                         desktop::play_sound();
                     }
                     if let Some(image) = preview {
-                        desktop::show_preview(image, media.path.clone());
+                        desktop::show_preview(image, media.path.clone(), settings.dark);
                     }
                     send_media((media, warning));
                 })
@@ -209,7 +220,7 @@ fn worker(root: PathBuf, rx: Receiver<Work>, tx: Sender<Report>, ctx: egui::Cont
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Page {
     Capture,
     History,
@@ -299,7 +310,8 @@ struct App {
     hotkey_errors: [String; 7],
     snipping: bool,
     hotkey_recorder: Option<shortcut::Recorder>,
-    thumbnails: HashMap<PathBuf, egui::TextureHandle>,
+    thumbnails: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    thumbnail_requests: HashSet<PathBuf>,
     remotes: Vec<(String, String)>,
     upload_active: Vec<PathBuf>,
     file_category: Kind,
@@ -309,11 +321,16 @@ struct App {
     window_maximized: bool,
     update_exit: HANDLE,
     update_requested: bool,
+    capture_mode: usize,
+    artwork: Option<egui::TextureHandle>,
+    history_grid: bool,
+    selected_capture: Option<PathBuf>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, root: PathBuf, data: PathBuf) -> Self {
         crate::chrome::attach(cc);
+        design::install_fonts(&cc.egui_ctx);
         let mut message = String::new();
         let mut settings: Settings =
             model::read_json(&data.join("settings.json")).unwrap_or_else(|error| {
@@ -362,6 +379,7 @@ impl App {
             snipping: false,
             hotkey_recorder: None,
             thumbnails: HashMap::new(),
+            thumbnail_requests: HashSet::new(),
             remotes,
             upload_active: Vec::new(),
             file_category: Kind::Screenshot,
@@ -377,6 +395,10 @@ impl App {
                 CreateEventW(std::ptr::null(), 0, 0, name.as_ptr())
             },
             update_requested: false,
+            capture_mode: 0,
+            artwork: design::artwork(&cc.egui_ctx),
+            history_grid: true,
+            selected_capture: None,
         };
         app.register_hotkeys();
         app
@@ -479,10 +501,29 @@ impl App {
     fn collect_reports(&mut self, ctx: &egui::Context) {
         while let Ok(report) = self.reports.try_recv() {
             match report {
-                Report::Captured(result, settings, label) => {
+                Report::Thumbnail(path, image) => {
+                    self.thumbnail_requests.remove(&path);
+                    let texture = image.map(|image| {
+                        ctx.load_texture(
+                            path.to_string_lossy(),
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [image.width() as usize, image.height() as usize],
+                                image.as_raw(),
+                            ),
+                            egui::TextureOptions::LINEAR,
+                        )
+                    });
+                    if self.thumbnails.len() >= 512 {
+                        self.thumbnails.clear();
+                    }
+                    self.thumbnails.insert(path, texture);
+                }
+                Report::Captured(result, settings, label, trace) => {
                     self.snipping = false;
                     match result {
-                        Ok(Some(image)) => self.send(Work::Screenshot(image, label, settings)),
+                        Ok(Some(image)) => {
+                            self.send(Work::Screenshot(image, label, settings, trace))
+                        }
                         Ok(None) => {}
                         Err(error) => self.notice(error, true),
                     }
@@ -566,13 +607,26 @@ impl App {
         ctx.send_viewport_cmd(ViewportCommand::Focus);
     }
 
-    fn handle_action(&mut self, action: usize, ctx: &egui::Context) {
+    fn handle_action(&mut self, action: usize, ctx: &egui::Context, source: &'static str) {
+        let trace = ["region", "window", "monitor", "desktop"]
+            .get(action)
+            .filter(|_| self.settings.screenshot_diagnostics)
+            .map(|&mode| CaptureTrace::new(&self.data, mode));
+        if let Some(trace) = &trace {
+            trace.stage(source);
+        }
         if self.busy {
+            if let Some(trace) = &trace {
+                trace.stage("busy");
+            }
             self.notice("One capture operation is still running.", true);
             return;
         }
         let settings = self.settings.clone();
         if self.snipping {
+            if let Some(trace) = &trace {
+                trace.stage("selection_in_progress");
+            }
             return;
         }
         match action {
@@ -609,6 +663,9 @@ impl App {
                 let (mode, bounds, label) = match target {
                     Ok(target) => target,
                     Err(error) => {
+                        if let Some(trace) = &trace {
+                            trace.stage("invalid_target");
+                        }
                         self.notice(error.to_string(), true);
                         return;
                     }
@@ -620,10 +677,23 @@ impl App {
                 let root = self.root.clone();
                 let data = self.data.clone();
                 thread::spawn(move || {
-                    let result =
-                        crate::sharex::capture(&root, &data, mode, bounds, settings.cursor)
-                            .map_err(|error| format!("{error:#}"));
-                    let _ = tx.send(Report::Captured(result, settings, label));
+                    let result = crate::sharex::capture(
+                        &root,
+                        &data,
+                        mode,
+                        bounds,
+                        settings.cursor,
+                        trace.as_ref(),
+                    )
+                    .map_err(|error| format!("{error:#}"));
+                    if let Some(trace) = &trace {
+                        trace.stage(match &result {
+                            Ok(Some(_)) => "image_received",
+                            Ok(None) => "selection_cancelled",
+                            Err(_) => "capture_failed",
+                        });
+                    }
+                    let _ = tx.send(Report::Captured(result, settings, label, trace));
                     ctx.request_repaint();
                 });
             }
@@ -648,7 +718,7 @@ impl App {
                     .find(|(key, _)| key.id() == event.id)
                     .map(|(_, action)| *action)
                 {
-                    self.handle_action(action, ctx);
+                    self.handle_action(action, ctx, "hotkey_received");
                 }
             }
         }
@@ -659,13 +729,13 @@ impl App {
             if event.id == *tray.open.id() {
                 self.open(ctx);
             } else if event.id == *tray.region.id() {
-                self.handle_action(0, ctx);
+                self.handle_action(0, ctx, "tray_requested");
             } else if event.id == *tray.arm.id() {
-                self.handle_action(5, ctx);
+                self.handle_action(5, ctx, "tray_requested");
             } else if event.id == *tray.save.id() {
-                self.handle_action(4, ctx);
+                self.handle_action(4, ctx, "tray_requested");
             } else if event.id == *tray.record.id() {
-                self.handle_action(6, ctx);
+                self.handle_action(6, ctx, "tray_requested");
             } else if event.id == *tray.quit.id() {
                 self.request_quit(ctx);
             }
@@ -696,12 +766,12 @@ impl App {
                 let painter = ui.painter();
                 let logo =
                     Rect::from_min_size(boundary.min + Vec2::new(12.0, 7.0), Vec2::splat(24.0));
-                paint_bear(painter, logo);
+                design::bear(painter, logo, false);
                 painter.text(
                     boundary.min + Vec2::new(43.0, 20.0),
                     Align2::LEFT_CENTER,
                     "Kuma Capture",
-                    FontId::proportional(14.0),
+                    FontId::proportional(15.0),
                     text,
                 );
                 let controls = 126.0;
@@ -760,228 +830,382 @@ impl App {
     }
 
     fn page_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("pages").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                for (label, page) in [
-                    ("Capture", Page::Capture),
-                    ("History", Page::History),
-                    ("Settings", Page::Settings),
-                ] {
-                    if ui.selectable_label(self.page == page, label).clicked() {
-                        self.page = page;
-                    }
+        let p = design::Palette::new(self.settings.dark);
+        egui::TopBottomPanel::top("pages")
+            .frame(
+                egui::Frame::new()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::symmetric(22, 9)),
+            )
+            .show(ctx, |ui| {
+                let page = match self.page {
+                    Page::Capture => 0,
+                    Page::History => 1,
+                    Page::Settings => 2,
+                };
+                if let Some(next) = design::navigation(ui, page) {
+                    self.page = [Page::Capture, Page::History, Page::Settings][next];
                 }
             });
-            ui.add_space(5.0);
-        });
     }
 
     fn capture_view(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let status = if let Some(started) = self.status.recording {
-            format!("Recording · {}s", started.elapsed().as_secs())
-        } else if let Some(started) = self.status.replay {
-            let elapsed = started.elapsed().as_secs();
-            let target = self.settings.replay_seconds as u64;
-            if elapsed < target {
-                format!("Buffering · {elapsed}/{target}s")
-            } else {
-                "Replay ready".into()
-            }
-        } else {
-            "Replay off".into()
-        };
         let display = capture::selected_display(&self.settings.monitor)
             .map(|display| display.label)
             .unwrap_or_else(|_| "Selected display disconnected".into());
-        ui.add_space(10.0);
-        card(ui, |ui| {
-            ui.set_min_height(124.0);
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Kuma Capture").size(32.0).strong());
-                    ui.label(display);
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(status).strong().color(HONEY));
-                });
-                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(138.0, 108.0), Sense::hover());
-                    paint_bear(ui.painter(), rect);
-                    ui.painter().text(
-                        rect.min + Vec2::new(13.0, 22.0),
-                        Align2::CENTER_CENTER,
-                        "✦",
-                        FontId::proportional(16.0),
-                        HONEY,
-                    );
-                    ui.painter().text(
-                        rect.right_top() + Vec2::new(-12.0, 31.0),
-                        Align2::CENTER_CENTER,
-                        "✦",
-                        FontId::proportional(19.0),
-                        HONEY,
-                    );
-                });
-            });
-        });
-        ui.add_space(12.0);
-        ui.columns(2, |columns| {
-            card(&mut columns[0], |ui| {
-                ui.heading("Screenshots");
-                ui.add_space(5.0);
-                for action in 0..4 {
-                    if action_button(
-                        ui,
-                        ACTIONS[action],
-                        &self.settings.hotkeys[action],
-                        !self.busy,
-                    ) {
-                        self.handle_action(action, &ctx);
-                    }
-                }
-            });
-            card(&mut columns[1], |ui| {
-                ui.heading("Clips & recording");
-                ui.add_space(5.0);
-                let arm = if self.status.replay.is_some() {
-                    "Stop replay"
-                } else {
-                    "Arm replay"
-                };
-                let record = if self.status.recording.is_some() {
-                    "Stop recording"
-                } else {
-                    "Start recording"
-                };
-                if action_button(ui, arm, &self.settings.hotkeys[5], !self.busy) {
-                    self.handle_action(5, &ctx);
-                }
-                if action_button(
-                    ui,
-                    "Save clip",
-                    &self.settings.hotkeys[4],
-                    !self.busy && self.status.replay.is_some(),
-                ) {
-                    self.handle_action(4, &ctx);
-                }
-                if action_button(ui, record, &self.settings.hotkeys[6], !self.busy) {
-                    self.handle_action(6, &ctx);
-                }
-                ui.add_space(4.0);
-                ui.label("Video includes the entire selected display.");
-            });
-        });
+        let data = design::CapturePanel {
+            shortcuts: &self.settings.hotkeys,
+            display: &display,
+            replay: self.status.replay.map(|time| {
+                (
+                    time.elapsed().as_secs(),
+                    self.settings.replay_seconds as u64,
+                )
+            }),
+            recording: self.status.recording.map(|time| time.elapsed().as_secs()),
+            working: self.busy || self.snipping,
+        };
+        if let Some(action) =
+            design::capture(ui, data, &mut self.capture_mode, self.artwork.as_ref())
+        {
+            self.handle_action(action, &ctx, "panel_requested");
+        }
     }
 
     fn history_view(&mut self, ui: &mut egui::Ui) {
-        let mut upload = None;
+        let p = design::Palette::ui(ui);
         ui.horizontal(|ui| {
-            ui.heading("History");
-            ui.separator();
+            ui.label(design::heading("History", 36.));
+            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.selectable_value(&mut self.history_grid, false, "List");
+                ui.selectable_value(&mut self.history_grid, true, "Grid");
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.filter, None, "All");
-            for kind in Kind::ALL {
-                ui.selectable_value(&mut self.filter, Some(kind), kind.label());
+            for (kind, title) in [
+                (Kind::Screenshot, "Screenshots"),
+                (Kind::Clip, "Clips"),
+                (Kind::Recording, "Recordings"),
+            ] {
+                ui.selectable_value(&mut self.filter, Some(kind), title);
             }
         });
-        ui.add_space(8.0);
-        let mut count = 0;
-        for media in self
+        ui.add_space(10.);
+        let matches = self
             .history
             .iter()
-            .filter(|item| self.filter.is_none_or(|kind| kind == item.kind))
-        {
-            count += 1;
-            card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if media.kind == Kind::Screenshot {
-                        if !self.thumbnails.contains_key(&media.path) {
-                            if let Ok(image) = image::open(&media.path) {
-                                let thumbnail = image.thumbnail(100, 65).to_rgba8();
-                                let pixels = egui::ColorImage::from_rgba_unmultiplied(
-                                    [thumbnail.width() as usize, thumbnail.height() as usize],
-                                    thumbnail.as_raw(),
-                                );
-                                self.thumbnails.insert(
-                                    media.path.clone(),
-                                    ui.ctx().load_texture(
-                                        media.path.to_string_lossy(),
-                                        pixels,
-                                        egui::TextureOptions::LINEAR,
-                                    ),
-                                );
-                            }
-                        }
-                        if let Some(texture) = self.thumbnails.get(&media.path) {
-                            ui.image((texture.id(), texture.size_vec2()));
-                        }
+            .enumerate()
+            .filter(|(_, entry)| self.filter.is_none_or(|kind| entry.kind == kind))
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            design::surface(ui, 22).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                let size = Vec2::new(111., 85.);
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                let p = design::Palette::ui(ui);
+                for (dx, dy) in [(7., 21.), (43., 15.)] {
+                    let print =
+                        Rect::from_min_size(rect.min + Vec2::new(dx, dy), Vec2::new(49., 55.));
+                    ui.painter().rect_filled(print, 4., p.secondary);
+                    design::mark(
+                        ui.painter(),
+                        print.shrink(9.),
+                        design::Mark::Photo,
+                        p.muted,
+                        p.accent,
+                    );
+                }
+                design::bear(
+                    ui.painter(),
+                    Rect::from_center_size(rect.center() + Vec2::new(-5., -13.), Vec2::splat(48.)),
+                    true,
+                );
+                ui.label(design::heading(
+                    if self.history.is_empty() {
+                        "Ready for your first capture"
+                    } else {
+                        "No captures in this view"
+                    },
+                    22.,
+                ));
+                if self.history.is_empty() {
+                    if ui.button("Go to Capture").clicked() {
+                        self.page = Page::Capture;
                     }
-                    ui.vertical(|ui| {
-                        let name = media.path.file_name().unwrap_or_default().to_string_lossy();
-                        ui.label(RichText::new(name).strong());
-                        let duration = media
-                            .duration
-                            .map(|seconds| format!(" · {seconds}s"))
-                            .unwrap_or_default();
-                        ui.small(format!(
-                            "{} · {}{duration}",
-                            media.timestamp.format("%b %d, %H:%M"),
-                            media.dimensions
-                        ));
-                        if !media.upload.is_empty() {
-                            ui.small(&media.upload);
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            if ui.button("Open").clicked() {
-                                let _ = Command::new("explorer").arg(&media.path).spawn();
-                            }
-                            if ui.button("Show in Explorer").clicked() {
-                                let _ = Command::new("explorer")
-                                    .arg(format!("/select,{}", media.path.display()))
-                                    .spawn();
-                            }
-                            if ui.button("Copy path").clicked() {
-                                ui.ctx()
-                                    .copy_text(media.path.to_string_lossy().into_owned());
-                            }
-                            if !media.link.is_empty() && ui.button("Copy link").clicked() {
-                                ui.ctx().copy_text(media.link.clone());
-                            }
-                            if !self.upload_active.contains(&media.path) {
-                                if media.upload.starts_with("Failed:") {
-                                    if let Some(profile) = self
-                                        .settings
-                                        .profiles
-                                        .iter()
-                                        .find(|item| item.id == media.upload_profile)
-                                    {
-                                        if ui.button("Retry").clicked() {
-                                            upload = Some((profile.clone(), media.path.clone()));
-                                        }
-                                    }
-                                }
-                                if !self.settings.profiles.is_empty() {
-                                    ui.menu_button("Send to…", |ui| {
-                                        for profile in &self.settings.profiles {
-                                            if ui.button(&profile.name).clicked() {
-                                                upload =
-                                                    Some((profile.clone(), media.path.clone()));
-                                                ui.close_menu();
-                                            }
-                                        }
+                } else if ui.button("Show all captures").clicked() {
+                    self.filter = None;
+                }
+            });
+            return;
+        }
+        if !matches
+            .iter()
+            .any(|&i| self.selected_capture.as_ref() == Some(&self.history[i].path))
+        {
+            self.selected_capture = Some(self.history[matches[0]].path.clone());
+        }
+        let mut upload = None;
+        let mut open = None;
+        let mut show = None;
+        let mut bearing = self.selected_capture.clone();
+        let mut column_widths = [ui.available_width() - 240., 220.];
+        if column_widths[0] < 330. {
+            column_widths = [ui.available_width(), ui.available_width()];
+        }
+        let stack = column_widths[0] == column_widths[1];
+        let mut listing = |ui: &mut egui::Ui,
+                           bearing: &mut Option<PathBuf>,
+                           opened: &mut Option<PathBuf>| {
+            ui.set_width(column_widths[0]);
+            let columns = if self.history_grid && ui.available_width() > 350. {
+                2
+            } else {
+                1
+            };
+            let rows = matches.len().div_ceil(columns);
+            let row_height = if self.history_grid { 144. } else { 55. };
+            egui::ScrollArea::vertical()
+                .id_salt("history captures")
+                .show_rows(ui, row_height, rows, |ui, range| {
+                    for row in range {
+                        ui.columns(columns, |cells| {
+                            for (offset, cell) in cells.iter_mut().enumerate() {
+                                let Some(&index) = matches.get(row * columns + offset) else {
+                                    continue;
+                                };
+                                let entry = &self.history[index];
+                                let selected = bearing.as_ref() == Some(&entry.path);
+                                let (rect, response) = cell.allocate_exact_size(
+                                    Vec2::new(cell.available_width(), row_height),
+                                    Sense::click(),
+                                );
+                                let name =
+                                    entry.path.file_name().unwrap_or_default().to_string_lossy();
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::selected(
+                                        egui::WidgetType::SelectableLabel,
+                                        true,
+                                        selected,
+                                        &*name,
+                                    )
+                                });
+                                let painter = cell.painter_at(rect);
+                                painter.rect(
+                                    rect,
+                                    9.,
+                                    if selected || response.hovered() {
+                                        p.secondary
+                                    } else {
+                                        p.paper
+                                    },
+                                    Stroke::new(
+                                        if response.has_focus() {
+                                            2.0_f32
+                                        } else {
+                                            1.0_f32
+                                        },
+                                        if response.has_focus() {
+                                            p.focus
+                                        } else {
+                                            p.line
+                                        },
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
+                                let art = if self.history_grid {
+                                    Rect::from_min_max(
+                                        rect.min + Vec2::splat(8.),
+                                        Pos2::new(rect.right() - 8., rect.bottom() - 36.),
+                                    )
+                                } else {
+                                    Rect::from_min_size(
+                                        rect.min + Vec2::new(7., 6.),
+                                        Vec2::new(57., row_height - 12.),
+                                    )
+                                };
+                                if !self.thumbnails.contains_key(&entry.path)
+                                    && self.thumbnail_requests.len() < 4
+                                    && self.thumbnail_requests.insert(entry.path.clone())
+                                {
+                                    let path = entry.path.clone();
+                                    let tx = self.report_sender.clone();
+                                    let ctx = cell.ctx().clone();
+                                    let kind = entry.kind;
+                                    std::thread::spawn(move || {
+                                        let image = if kind == Kind::Screenshot {
+                                            image::open(&path)
+                                                .ok()
+                                                .map(|image| image.thumbnail(320, 180).into_rgba8())
+                                        } else {
+                                            crate::desktop::thumbnail(&path)
+                                        };
+                                        let _ = tx.send(Report::Thumbnail(path, image));
+                                        ctx.request_repaint();
                                     });
+                                }
+                                painter.rect_filled(art, 5., p.bg);
+                                if let Some(Some(texture)) = self.thumbnails.get(&entry.path) {
+                                    let size = texture.size_vec2();
+                                    let scale = (art.width() / size.x).min(art.height() / size.y);
+                                    painter.image(
+                                        texture.id(),
+                                        Rect::from_center_size(art.center(), size * scale),
+                                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
+                                        Color32::WHITE,
+                                    );
+                                } else {
+                                    design::mark(
+                                        &painter,
+                                        Rect::from_center_size(art.center(), Vec2::splat(28.)),
+                                        if entry.kind == Kind::Screenshot {
+                                            design::Mark::Photo
+                                        } else {
+                                            design::Mark::Film
+                                        },
+                                        p.ink,
+                                        p.accent,
+                                    );
+                                }
+                                if let Some(seconds) = entry.duration.filter(|_| self.history_grid)
+                                {
+                                    let badge = Rect::from_min_size(
+                                        art.right_bottom() - Vec2::new(45., 22.),
+                                        Vec2::new(42., 19.),
+                                    );
+                                    painter.rect_filled(badge, 4., p.bg);
+                                    painter.text(
+                                        badge.center(),
+                                        Align2::CENTER_CENTER,
+                                        format!("{seconds}s"),
+                                        FontId::proportional(11.),
+                                        p.ink,
+                                    );
+                                }
+                                let text = if self.history_grid {
+                                    rect.left_bottom() + Vec2::new(11., -19.)
+                                } else {
+                                    art.right_center() + Vec2::new(11., 0.)
+                                };
+                                let limit = (rect.right() - text.x - 8.).max(20.);
+                                let galley = cell.fonts(|fonts| {
+                                    let mut job = egui::text::LayoutJob::simple(
+                                        name.into_owned(),
+                                        FontId::proportional(13.),
+                                        p.ink,
+                                        limit,
+                                    );
+                                    job.wrap.max_rows = 1;
+                                    fonts.layout_job(job)
+                                });
+                                painter.galley(
+                                    text - Vec2::new(0., galley.size().y / 2.),
+                                    galley,
+                                    p.ink,
+                                );
+                                if response.clicked() {
+                                    *bearing = Some(entry.path.clone());
+                                }
+                                if response.double_clicked() {
+                                    *opened = Some(entry.path.clone());
                                 }
                             }
                         });
-                    });
+                    }
                 });
+        };
+        let detail = |ui: &mut egui::Ui,
+                      selected: Option<&PathBuf>,
+                      upload: &mut Option<(UploadProfile, PathBuf)>,
+                      open: &mut Option<PathBuf>,
+                      show: &mut Option<PathBuf>| {
+            ui.set_width(column_widths[1]);
+            let Some(entry) = self
+                .history
+                .iter()
+                .find(|entry| Some(&entry.path) == selected)
+            else {
+                return;
+            };
+            design::surface(ui, 14).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(design::heading(entry.kind.label(), 20.));
+                ui.label(entry.path.file_name().unwrap_or_default().to_string_lossy());
+                ui.label(
+                    RichText::new(format!(
+                        "{}\n{}",
+                        entry.timestamp.format("%b %d, %H:%M"),
+                        entry.dimensions
+                    ))
+                    .color(p.muted),
+                );
+                if !entry.upload.is_empty() {
+                    ui.label(&entry.upload);
+                }
+                ui.add_space(8.);
+                if design::command(ui, "Open", "", design::Mark::Photo, false, true) {
+                    *open = Some(entry.path.clone());
+                }
+                if ui.button("Copy path").clicked() {
+                    ui.ctx()
+                        .copy_text(entry.path.to_string_lossy().into_owned());
+                }
+                if !entry.link.is_empty() && ui.button("Copy link").clicked() {
+                    ui.ctx().copy_text(entry.link.clone());
+                }
+                if ui.button("Show in folder").clicked() {
+                    *show = Some(entry.path.clone());
+                }
+                if !self.upload_active.contains(&entry.path) {
+                    if entry.upload.starts_with("Failed:") {
+                        if let Some(profile) = self
+                            .settings
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.id == entry.upload_profile)
+                        {
+                            if ui.button("Retry upload").clicked() {
+                                *upload = Some((profile.clone(), entry.path.clone()));
+                            }
+                        }
+                    }
+                    if !self.settings.profiles.is_empty() {
+                        ui.menu_button("Send to…", |ui| {
+                            for profile in &self.settings.profiles {
+                                if ui.button(&profile.name).clicked() {
+                                    *upload = Some((profile.clone(), entry.path.clone()));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                }
             });
-            ui.add_space(5.0);
+        };
+        if stack {
+            listing(ui, &mut bearing, &mut open);
+            detail(ui, bearing.as_ref(), &mut upload, &mut open, &mut show);
+        } else {
+            ui.horizontal_top(|ui| {
+                listing(ui, &mut bearing, &mut open);
+                detail(ui, bearing.as_ref(), &mut upload, &mut open, &mut show);
+            });
         }
-        if count == 0 {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(92.0), Sense::hover());
-            paint_bear(ui.painter(), rect);
-            ui.label("Captures appear here after you save them.");
+        self.selected_capture = bearing;
+        if let Some(path) = open {
+            if let Err(error) = Command::new("explorer").arg(path).spawn() {
+                self.notice(error.to_string(), true);
+            }
+        }
+        if let Some(path) = show {
+            if let Err(error) = Command::new("explorer")
+                .arg(format!("/select,{}", path.display()))
+                .spawn()
+            {
+                self.notice(error.to_string(), true);
+            }
         }
         if let Some((profile, path)) = upload {
             self.upload(profile, path, ui.ctx());
@@ -995,27 +1219,30 @@ impl App {
         let width = ui.available_width();
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
-                Vec2::new(146.0, ui.available_height()),
+                Vec2::new(164.0, ui.available_height()),
                 Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.heading("Settings");
+                    ui.label(design::heading("Settings", 27.));
                     ui.add_space(8.0);
                     for (id, name) in CATEGORIES.iter().enumerate() {
-                        ui.selectable_value(&mut self.settings.last_category, id, *name);
+                        let selected = id == self.settings.last_category;
+                        if ui.add_sized([157.,32.], egui::Button::new(*name).selected(selected)).clicked() {
+                            self.settings.last_category = id;
+                        }
                     }
                 },
             );
             ui.separator();
             ui.allocate_ui_with_layout(
-                Vec2::new((width - 170.0).max(420.0), ui.available_height()),
+                Vec2::new((width - 188.0).max(420.0), ui.available_height()),
                 Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.set_min_width((width - 174.0).max(420.0));
+                    ui.set_min_width((width - 192.0).max(420.0));
                     let category = self.settings.last_category.min(CATEGORIES.len() - 1);
                     egui::ScrollArea::vertical()
                         .id_salt(category)
                         .show(ui, |ui| {
-                            ui.heading(CATEGORIES[category]);
+                            ui.label(design::heading(CATEGORIES[category], 30.));
                             ui.add_space(8.0);
                             match category {
                                 0 => {
@@ -1025,7 +1252,14 @@ impl App {
                                     );
                                     ui.separator();
                                     ui.label(format!("Kuma Capture {}", env!("CARGO_PKG_VERSION")));
-                                    if ui.button("Check for updates").clicked() {
+                                    if design::command(
+                                        ui,
+                                        "Check for updates",
+                                        "",
+                                        design::Mark::Update,
+                                        false,
+                                        true,
+                                    ) {
                                         let path = self.root.join("KumaCaptureUpdater.exe");
                                         if let Err(error) = Command::new(path).spawn() {
                                             self.notice(
@@ -1086,6 +1320,14 @@ impl App {
                                         &mut self.settings.copy_path,
                                         "Copy saved file path to clipboard",
                                     );
+                                    if self.advanced(ui, 2) {
+                                        ui.checkbox(&mut self.settings.screenshot_diagnostics, "Log screenshot diagnostics");
+                                        ui.small("Logs include capture stages and timing. They omit screenshot content and file paths.");
+                                        let path = self.data.join("capture-diagnostics.log");
+                                        if ui.add_enabled(path.is_file(), egui::Button::new("Open capture log")).clicked() {
+                                            let _ = Command::new("notepad.exe").arg(path).spawn();
+                                        }
+                                    }
                                 }
                                 3 => self.video_settings(ui),
                                 4 => self.audio_settings(ui),
@@ -1149,6 +1391,7 @@ impl App {
                 self.settings.copy_path = defaults.copy_path;
                 self.settings.screenshot_preview = defaults.screenshot_preview;
                 self.settings.screenshot_sound = defaults.screenshot_sound;
+                self.settings.screenshot_diagnostics = defaults.screenshot_diagnostics;
             }
             3 => {
                 self.settings.monitor = defaults.monitor;
@@ -1617,7 +1860,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(110));
         if self.theme != Some(self.settings.dark) {
-            theme(ctx, self.settings.dark);
+            design::theme(ctx, self.settings.dark);
             self.theme = Some(self.settings.dark);
         }
         self.inputs(ctx);
@@ -1660,15 +1903,21 @@ impl eframe::App for App {
             }
             ui.add_space(2.0);
         });
-        egui::CentralPanel::default().show(ctx, |ui| match self.page {
-            Page::Capture => {
-                egui::ScrollArea::vertical().show(ui, |ui| self.capture_view(ui));
-            }
-            Page::History => {
-                egui::ScrollArea::vertical().show(ui, |ui| self.history_view(ui));
-            }
-            Page::Settings => self.settings_view(ui),
-        });
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(design::Palette::new(self.settings.dark).bg)
+                    .inner_margin(egui::Margin::symmetric(26, 17)),
+            )
+            .show(ctx, |ui| match self.page {
+                Page::Capture => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.capture_view(ui));
+                }
+                Page::History => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.history_view(ui));
+                }
+                Page::Settings => self.settings_view(ui),
+            });
         if self.pending.is_some() {
             egui::Modal::new(egui::Id::new("confirm replay reset")).show(ctx, |ui| {
                 ui.heading("Reset the replay buffer?");
@@ -1694,17 +1943,6 @@ impl eframe::App for App {
     }
 }
 
-fn action_button(ui: &mut egui::Ui, name: &str, key: &str, enabled: bool) -> bool {
-    let mut clicked = false;
-    ui.horizontal(|ui| {
-        clicked = ui.add_enabled(enabled, egui::Button::new(name)).clicked();
-        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.small(key);
-        });
-    });
-    clicked
-}
-
 fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .corner_radius(CornerRadius::same(12))
@@ -1724,49 +1962,6 @@ fn encoder_label(id: &str) -> &'static str {
         "amd" => "AMD hardware",
         _ => "Software x264",
     }
-}
-
-fn theme(ctx: &egui::Context, dark: bool) {
-    let mut visuals = if dark {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
-    };
-    visuals.panel_fill = if dark {
-        Color32::from_rgb(42, 31, 29)
-    } else {
-        PAPER
-    };
-    visuals.extreme_bg_color = if dark {
-        Color32::from_rgb(58, 43, 39)
-    } else {
-        Color32::from_rgb(255, 253, 245)
-    };
-    visuals.override_text_color = Some(if dark {
-        Color32::from_rgb(250, 234, 222)
-    } else {
-        BROWN
-    });
-    visuals.selection.bg_fill = if dark {
-        Color32::from_rgb(103, 65, 67)
-    } else {
-        PINK
-    };
-    visuals.widgets.inactive.bg_fill = if dark {
-        Color32::from_rgb(71, 49, 42)
-    } else {
-        Color32::from_rgb(250, 230, 211)
-    };
-    visuals.widgets.hovered.bg_fill = if dark {
-        Color32::from_rgb(112, 70, 73)
-    } else {
-        PINK
-    };
-    ctx.set_visuals(visuals);
-    let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = Vec2::new(9.0, 8.0);
-    style.spacing.button_padding = Vec2::new(10.0, 5.0);
-    ctx.set_style(style);
 }
 
 fn icon_pixels() -> Vec<u8> {
@@ -1797,37 +1992,4 @@ fn icon_pixels() -> Vec<u8> {
         }
     }
     pixels
-}
-
-fn paint_bear(painter: &egui::Painter, bounds: Rect) {
-    let centre = bounds.center();
-    let unit = bounds.width().min(bounds.height()) / 64.0;
-    let point = |x, y| centre + Vec2::new(x * unit, y * unit);
-    let cocoa = Color32::from_rgb(186, 117, 72);
-    for x in [-20.0, 20.0] {
-        painter.circle_filled(point(x, -15.0), 11.0 * unit, cocoa);
-        painter.circle_filled(point(x, -15.0), 6.7 * unit, PINK);
-    }
-    painter.add(egui::epaint::EllipseShape::filled(
-        point(0.0, 4.0),
-        Vec2::new(25.0, 20.0) * unit,
-        cocoa,
-    ));
-    painter.add(egui::epaint::EllipseShape::filled(
-        point(0.0, 11.0),
-        Vec2::new(11.0, 8.0) * unit,
-        PAPER,
-    ));
-    for x in [-10.0, 10.0] {
-        painter.circle_filled(point(x, 1.0), 2.6 * unit, BROWN);
-    }
-    painter.circle_filled(point(0.0, 8.0), 2.8 * unit, BROWN);
-    painter.line_segment(
-        [point(0.0, 10.0), point(-3.2, 13.0)],
-        Stroke::new(1.1 * unit, BROWN),
-    );
-    painter.line_segment(
-        [point(0.0, 10.0), point(3.2, 13.0)],
-        Stroke::new(1.1 * unit, BROWN),
-    );
 }

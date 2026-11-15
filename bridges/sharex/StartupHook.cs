@@ -1,6 +1,11 @@
 // The region request setup follows CaptureRegion.cs from ShareX, copyright 2007–2026 ShareX Team.
 // Distributed under GPL-3.0-or-later. The overlay, editor, and screenshot assemblies are upstream ShareX.
 using System.Drawing;
+using Point = System.Drawing.Point;
+using System.Diagnostics;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Threading;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -13,6 +18,18 @@ using SkiaSharp;
 
 public static class StartupHook
 {
+    private static readonly string? StageFile = Environment.GetEnvironmentVariable("KUMA_SHAREX_STAGES");
+    private static readonly Stopwatch Clock = Stopwatch.StartNew();
+
+    private static void Stage(string stage)
+    {
+        if (string.IsNullOrEmpty(StageFile))
+            return;
+        try { File.AppendAllText(StageFile, $"{Clock.ElapsedMilliseconds} {stage}\n"); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
     // .NET invokes this entry point before ShareX.Main. The original executable
     // supplies its app host, dependency manifest, and self-contained runtime.
     [SupportedOSPlatform("windows10.0.22621")]
@@ -47,9 +64,11 @@ public static class StartupHook
             }
             if (mode != "region")
             {
+                Stage("frame_requested");
                 using SKBitmap? bitmap = ScreenshotForMode(mode, cursor);
                 if (bitmap is null)
                     throw new InvalidOperationException("ShareX returned no screenshot.");
+                Stage("frame_acquired");
                 WritePng(bitmap, output);
                 return 0;
             }
@@ -105,10 +124,12 @@ public static class StartupHook
         var screenshot = new Screenshot { CaptureCursor = false };
         Rectangle bounds = CaptureHelpers.GetScreenBounds();
         SKBitmap frozen;
+        Stage("frame_requested");
         using (SKBitmap canvas = screenshot.CaptureFullscreen())
         {
             frozen = canvas.Copy();
         }
+        Stage("frame_acquired");
 
         SKBitmap? cursor = null;
         Point position = Point.Empty;
@@ -123,19 +144,44 @@ public static class StartupHook
             }
         }
 
-        var result = await RegionCaptureIntegration.CaptureAsync(new AvaloniaRegionCaptureRequest
+        Stage("overlay_requested");
+        DispatcherTimer? detector = null;
+        if (!string.IsNullOrEmpty(StageFile))
         {
-            Screenshot = frozen,
-            ScreenBounds = bounds,
-            RegionCaptureOptions = new RegionCaptureOptions(),
-            ImageEditorOptions = new ImageEditorOptions(),
-            EnableAnnotations = true,
-            AllowMultipleRegions = true,
-            CursorBitmap = cursor,
-            CursorPosition = position
-        });
+            detector = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+            detector.Tick += (_, _) =>
+            {
+                if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop
+                    && desktop.Windows.Any(window => window.IsVisible && window.GetType().Name == "RegionCaptureWindow"))
+                {
+                    Stage("overlay_visible");
+                    detector.Stop();
+                }
+            };
+            detector.Start();
+        }
+        AvaloniaRegionCaptureResult? result;
+        try
+        {
+            result = await RegionCaptureIntegration.CaptureAsync(new AvaloniaRegionCaptureRequest
+            {
+                Screenshot = frozen,
+                ScreenBounds = bounds,
+                RegionCaptureOptions = new RegionCaptureOptions(),
+                ImageEditorOptions = new ImageEditorOptions(),
+                EnableAnnotations = true,
+                AllowMultipleRegions = true,
+                CursorBitmap = cursor,
+                CursorPosition = position
+            });
+        }
+        finally
+        {
+            detector?.Stop();
+        }
         if (result is not null)
         {
+            Stage("selection_complete");
             using SKBitmap image = result.Image;
             WritePng(image, output);
         }
@@ -149,6 +195,7 @@ public static class StartupHook
             ?? throw new InvalidOperationException("Could not encode the ShareX screenshot.");
         using FileStream file = File.Create(output);
         encoded.SaveTo(file);
+        Stage("png_written");
     }
 
     private static void WriteError(string output, Exception error)

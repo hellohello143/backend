@@ -29,8 +29,17 @@ mod tests {
 }
 
 #[cfg(windows)]
+#[path = "../design.rs"]
+#[allow(dead_code)]
+mod design;
+
+#[cfg(windows)]
 mod windows {
+    use crate::design;
     use anyhow::{bail, Context, Result};
+    use eframe::egui::{self, RichText};
+    use std::sync::mpsc;
+
     use serde::Deserialize;
     use sha2::{Digest, Sha256};
     use std::{
@@ -230,7 +239,14 @@ mod windows {
         Ok(best)
     }
 
-    fn download(agent: &ureq::Agent, url: &str, path: &Path, hash: &str, size: u64) -> Result<()> {
+    fn download(
+        agent: &ureq::Agent,
+        url: &str,
+        path: &Path,
+        hash: &str,
+        size: u64,
+        mut progress: impl FnMut(f32),
+    ) -> Result<()> {
         let response = agent
             .get(url)
             .call()
@@ -240,6 +256,7 @@ mod windows {
         let mut digest = Sha256::new();
         let mut buffer = vec![0; 128 * 1024];
         let mut written = 0;
+        let mut last_percent = 0;
         loop {
             let count = input.read(&mut buffer)?;
             if count == 0 {
@@ -248,6 +265,11 @@ mod windows {
             file.write_all(&buffer[..count])?;
             digest.update(&buffer[..count]);
             written += count as u64;
+            let percent = (written * 100 / size).min(100);
+            if percent > last_percent {
+                progress(percent as f32 / 100.);
+                last_percent = percent;
+            }
         }
         file.sync_all()?;
         if written != size || !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(hash) {
@@ -324,6 +346,102 @@ mod windows {
             return Ok(());
         }
 
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([440., 260.])
+                .with_resizable(false),
+            ..Default::default()
+        };
+        eframe::run_native(
+            "Kuma Capture Updater",
+            options,
+            Box::new(move |cc| {
+                design::install_fonts(&cc.egui_ctx);
+                let dark = fs::read(local.join("KumaCapture/settings.json"))
+                    .ok()
+                    .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
+                    .and_then(|settings| settings["dark"].as_bool())
+                    .unwrap_or(false);
+                design::theme(&cc.egui_ctx, dark);
+                let ctx = cc.egui_ctx.clone();
+                let (tx, rx) = mpsc::channel();
+                thread::spawn(move || {
+                    let publish = |state| {
+                        let _ = tx.send(state);
+                        ctx.request_repaint();
+                    };
+                    let result = update(&work, &publish);
+                    publish(match result {
+                        Ok(message) => Stage::Finished(message),
+                        Err(error) => Stage::Failed(format!("{error:#}")),
+                    });
+                });
+                Ok(Box::new(UpdateWindow {
+                    rx,
+                    stage: Stage::Checking,
+                }))
+            }),
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    enum Stage {
+        Checking,
+        Downloading(f32),
+        Waiting,
+        Installing,
+        Finished(String),
+        Failed(String),
+    }
+
+    struct UpdateWindow {
+        rx: mpsc::Receiver<Stage>,
+        stage: Stage,
+    }
+
+    impl eframe::App for UpdateWindow {
+        fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+            while let Ok(stage) = self.rx.try_recv() {
+                self.stage = stage;
+            }
+            if matches!(self.stage, Stage::Installing)
+                && ctx.input(|i| i.viewport().close_requested())
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(design::Palette::new(ctx.style().visuals.dark_mode).bg).inner_margin(egui::Margin::same(19)))
+                .show(ctx, |ui| {
+                    let p = design::Palette::ui(ui);
+                    ui.horizontal(|ui| {
+                        let (area, _) = ui.allocate_exact_size(egui::Vec2::splat(47.), egui::Sense::hover());
+                        design::bear(ui.painter(), area, matches!(self.stage, Stage::Finished(_)));
+                        ui.label(design::heading("Kuma Capture Updater", 25.));
+                    });
+                    ui.add_space(8.);
+                    let (title, hint) = match &self.stage {
+                        Stage::Checking => ("Checking for updates", "Looking for a newer release on GitHub."),
+                        Stage::Downloading(_) => ("Downloading update", "Kuma will verify the download before installing."),
+                        Stage::Waiting => ("Waiting for Kuma Capture", "Finish any active capture or upload. Older versions may need to be closed from the tray."),
+                        Stage::Installing => ("Installing update", "Your captures and preferences are available after the update."),
+                        Stage::Finished(message) => ("Ready", message.as_str()),
+                        Stage::Failed(message) => ("Update could not finish", message.as_str()),
+                    };
+                    ui.label(design::heading(title, 21.));
+                    ui.label(RichText::new(hint).color(p.muted));
+                    ui.add_space(8.);
+                    match &self.stage {
+                        Stage::Downloading(progress) => { ui.add(egui::ProgressBar::new(*progress).fill(p.accent).show_percentage()); }
+                        Stage::Finished(_) | Stage::Failed(_) => {
+                            if ui.button("Close").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+                        }
+                        _ => { ui.spinner(); ctx.request_repaint_after(Duration::from_millis(55)); }
+                    }
+                });
+        }
+    }
+
+    fn update(work: &Path, publish: &impl Fn(Stage)) -> Result<String> {
         let location = install_location().context("Kuma Capture setup could not be found. If you use the portable ZIP, download the new ZIP from GitHub Releases.")?;
         let installed = registry("DisplayVersion")
             .as_deref()
@@ -331,16 +449,19 @@ mod windows {
             .unwrap_or((0, 1, 0));
         let agent = agent();
         let Some((new, url, hash, size)) = available(&agent, installed)? else {
-            message("Kuma Capture is already up to date.", false);
-            return Ok(());
+            return Ok("Kuma Capture is already up to date.".into());
         };
         let folder = tempfile::Builder::new()
             .prefix("download-")
-            .tempdir_in(&work)?;
+            .tempdir_in(work)?;
         let installer = folder.path().join(INSTALLER);
-        download(&agent, &url, &installer, &hash, size)?;
+        publish(Stage::Downloading(0.));
+        download(&agent, &url, &installer, &hash, size, |fraction| {
+            publish(Stage::Downloading(fraction))
+        })?;
+        publish(Stage::Waiting);
         let running = close_app()?;
-        // NSIS discovers the existing directory from the same uninstall entry.
+        publish(Stage::Installing);
         let status = Command::new(&installer)
             .arg("/S")
             .status()
@@ -356,11 +477,10 @@ mod windows {
                 .spawn()
                 .context("Reopen Kuma Capture")?;
         }
-        message(
-            &format!("Kuma Capture {}.{}.{} is installed.", new.0, new.1, new.2),
-            false,
-        );
-        Ok(())
+        Ok(format!(
+            "Kuma Capture {}.{}.{} is installed.",
+            new.0, new.1, new.2
+        ))
     }
 }
 
