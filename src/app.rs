@@ -1,7 +1,10 @@
 use crate::capture_trace::CaptureTrace;
 use crate::{
     capture, design, desktop,
-    model::{self, DateFolders, Kind, Media, NameInfo, Settings, UploadProfile, ACTIONS},
+    model::{
+        self, DateFolders, Kind, Media, NameInfo, Settings, UploadProfile, VideoCaptureMode,
+        ACTIONS,
+    },
     obs::Engine,
     shortcut, uploads,
 };
@@ -86,8 +89,12 @@ pub fn run() -> Result<()> {
 }
 
 enum Work {
-    Replay(Settings),
-    Recording(Settings, String),
+    Replay {
+        settings: Settings,
+        game_window: Option<String>,
+        rearm: bool,
+    },
+    Recording(Settings, String, Option<String>),
     SaveReplay(Settings, String),
     Devices(Settings),
     Screenshot(RgbaImage, String, String, Settings, Option<CaptureTrace>),
@@ -173,17 +180,26 @@ fn worker(root: PathBuf, rx: Receiver<Work>, tx: Sender<Report>, ctx: egui::Cont
             let _ = tx.send(Report::Saved(media, warning));
         };
         let result = match work {
-            Work::Replay(settings) => {
+            Work::Replay {
+                settings,
+                game_window,
+                rearm,
+            } => {
                 current = settings;
-                engine.toggle_replay(&current)
+                if rearm {
+                    engine.stop();
+                }
+                engine.toggle_replay(&current, game_window.as_deref())
             }
-            Work::Recording(settings, program) => {
+            Work::Recording(settings, program, game_window) => {
                 current = settings;
-                engine.toggle_recording(&current, program).map(|media| {
-                    if let Some(media) = media {
-                        send_media((media, None));
-                    }
-                })
+                engine
+                    .toggle_recording(&current, program, game_window.as_deref())
+                    .map(|media| {
+                        if let Some(media) = media {
+                            send_media((media, None));
+                        }
+                    })
             }
             Work::SaveReplay(settings, program) => {
                 current = settings;
@@ -623,6 +639,13 @@ impl App {
         ctx.send_viewport_cmd(ViewportCommand::Focus);
     }
 
+    fn game_target(&self, settings: &Settings) -> Result<Option<String>> {
+        if settings.video_capture_mode == VideoCaptureMode::Game {
+            return capture::game_window(capture::capture_window(self.previous_window)).map(Some);
+        }
+        Ok(None)
+    }
+
     fn handle_action(&mut self, action: usize, ctx: &egui::Context, source: &'static str) {
         let trace = ["region", "window", "monitor", "desktop"]
             .get(action)
@@ -650,10 +673,30 @@ impl App {
                 let program = capture::program_name(capture::capture_window(self.previous_window));
                 self.send(Work::SaveReplay(settings, program));
             }
-            5 => self.send(Work::Replay(settings)),
-            6 => {
-                let program = capture::program_name(capture::capture_window(self.previous_window));
-                self.send(Work::Recording(settings, program));
+            5 | 6 => {
+                let game_window = if self.status.replay.is_none() && self.status.recording.is_none()
+                {
+                    match self.game_target(&settings) {
+                        Ok(target) => target,
+                        Err(error) => {
+                            self.notice(error.to_string(), true);
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
+                if action == 5 {
+                    self.send(Work::Replay {
+                        settings,
+                        game_window,
+                        rearm: false,
+                    });
+                } else {
+                    let program =
+                        capture::program_name(capture::capture_window(self.previous_window));
+                    self.send(Work::Recording(settings, program, game_window));
+                }
             }
             0..=3 => {
                 let window = capture::capture_window(self.previous_window);
@@ -865,9 +908,13 @@ impl App {
 
     fn capture_view(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let display = capture::selected_display(&self.settings.monitor)
-            .map(|display| display.label)
-            .unwrap_or_else(|_| "Selected display disconnected".into());
+        let display = if self.settings.video_capture_mode == VideoCaptureMode::Game {
+            self.settings.video_capture_mode.label().to_owned()
+        } else {
+            capture::selected_display(&self.settings.monitor)
+                .map(|display| display.label)
+                .unwrap_or_else(|_| "Selected display disconnected".into())
+        };
         let data = design::CapturePanel {
             shortcuts: &self.settings.hotkeys,
             display: &display,
@@ -1464,6 +1511,7 @@ impl App {
             );
         });
         let capture_changed = old.monitor != self.settings.monitor
+            || old.video_capture_mode != self.settings.video_capture_mode
             || old.replay_seconds != self.settings.replay_seconds
             || old.replay_mb != self.settings.replay_mb
             || old.resolution != self.settings.resolution
@@ -1512,6 +1560,7 @@ impl App {
             }
             3 => {
                 self.settings.monitor = defaults.monitor;
+                self.settings.video_capture_mode = defaults.video_capture_mode;
                 self.settings.replay_seconds = defaults.replay_seconds;
                 self.settings.replay_mb = defaults.replay_mb;
                 self.settings.resolution = defaults.resolution;
@@ -1656,6 +1705,24 @@ impl App {
     }
 
     fn video_settings(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Video source");
+            egui::ComboBox::from_id_salt("video capture mode")
+                .selected_text(self.settings.video_capture_mode.label())
+                .show_ui(ui, |ui| {
+                    for mode in [VideoCaptureMode::Display, VideoCaptureMode::Game] {
+                        ui.selectable_value(
+                            &mut self.settings.video_capture_mode,
+                            mode,
+                            mode.label(),
+                        );
+                    }
+                });
+        });
+        if self.settings.video_capture_mode == VideoCaptureMode::Game {
+            ui.small("Focus the game, then arm replay or start recording. Stop both before switching games.");
+            ui.small("For League of Legends, start from a match or Practice Tool.");
+        }
         let displays = capture::displays();
         let label = displays
             .iter()
@@ -1676,7 +1743,10 @@ impl App {
                     ui.selectable_value(&mut self.settings.monitor, display.id, display.label);
                 }
             });
-        ui.label("Clips and recordings always use the entire display.");
+        ui.label(match self.settings.video_capture_mode {
+            VideoCaptureMode::Display => "Clips and recordings use the entire selected display.",
+            VideoCaptureMode::Game => "The selected display sets the video size. The game fills the frame while keeping its aspect ratio.",
+        });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             ui.label("Clip length");
@@ -2042,11 +2112,25 @@ impl eframe::App for App {
                 ui.heading("Reset the replay buffer?");
                 ui.label("Applying this change clears the current replay.");
                 ui.horizontal(|ui| {
-                    if ui.button("Apply and rearm").clicked() {
+                    if ui
+                        .add_enabled(
+                            !self.busy && self.status.recording.is_none(),
+                            egui::Button::new("Apply and rearm"),
+                        )
+                        .clicked()
+                    {
                         if let Some(settings) = self.pending.take() {
-                            self.settings = settings.clone();
-                            let _ = self.work.send(Work::Reset);
-                            self.send(Work::Replay(settings));
+                            match self.game_target(&settings) {
+                                Ok(game_window) => {
+                                    self.settings = settings.clone();
+                                    self.send(Work::Replay {
+                                        settings,
+                                        game_window,
+                                        rearm: true,
+                                    });
+                                }
+                                Err(error) => self.notice(error.to_string(), true),
+                            }
                         }
                     }
                     if ui.button("Cancel").clicked() {

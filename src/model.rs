@@ -87,12 +87,34 @@ pub struct UploadProfile {
     pub endpoint: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoCaptureMode {
+    #[default]
+    Display,
+    Game,
+}
+
+impl VideoCaptureMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Display => "Display Capture",
+            Self::Game => "OBS Game Capture",
+        }
+    }
+}
+
+pub fn obs_window_selector(title: &str, class: &str, executable: &str) -> String {
+    let escape = |text: &str| text.replace('#', "#22").replace(':', "#3A");
+    format!("{}:{}:{}", escape(title), escape(class), escape(executable))
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub folders: [Destination; 3],
     pub hotkeys: [String; 7],
     pub monitor: String,
+    pub video_capture_mode: VideoCaptureMode,
     pub replay_seconds: u32,
     pub replay_mb: u32,
     pub resolution: u32,
@@ -124,6 +146,7 @@ impl Default for Settings {
             folders: Default::default(),
             hotkeys: DEFAULT_KEYS.map(str::to_owned),
             monitor: String::new(),
+            video_capture_mode: VideoCaptureMode::Display,
             replay_seconds: 30,
             replay_mb: 512,
             resolution: 1080,
@@ -476,5 +499,16 @@ mod tests {
         assert!(settings.screenshot_preview);
         assert!(settings.screenshot_sound);
         assert_eq!(settings.hotkeys[4], "Ctrl+Shift+5");
+        assert_eq!(settings.video_capture_mode, VideoCaptureMode::Display);
+        let game: Settings = serde_json::from_str(r#"{"video_capture_mode":"Game"}"#).unwrap();
+        assert_eq!(game.video_capture_mode, VideoCaptureMode::Game);
+    }
+
+    #[test]
+    fn obs_selector_escapes_pinned_window_components() {
+        assert_eq!(
+            obs_window_selector("Game: #1", "Class:#22", "Game.exe"),
+            "Game#3A #221:Class#3A#2222:Game.exe"
+        );
     }
 }

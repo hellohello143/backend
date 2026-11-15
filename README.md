@@ -28,6 +28,10 @@ An illustrated Capture workspace, light and dark themes, a thumbnail History wit
 
 ![Kuma Capture light theme with replay armed](docs/kuma-capture-preview.png)
 
+### New in 0.4.2
+
+Under **Settings → Clips & Recording → Video source**, choose **OBS Game Capture** to target a game for replays and recordings. Focus the game before arming replay or starting a recording. For League of Legends, start inside a match or Practice Tool. **Display Capture** is the default.
+
 ### New in 0.4.1
 
 New captures start with the foreground program name and use minute-level timestamps, for example `Chrome_screenshot_2026-11-15_09-42.png`. A sequence suffix distinguishes captures saved in the same minute. In **History → Programs**, choose a program and filter its screenshots, clips, or recordings. Left-click a capture to open it, or right-click to see its actions.
@@ -38,7 +42,7 @@ New captures start with the foreground program name and use minute-level timesta
 
 **Screenshots powered by ShareX.** Region capture opens ShareX’s own snipping window with its selection and annotation tools. Window, monitor, and desktop screenshots use ShareX’s engine too. Kuma still handles the output format, clipboard, preview, and chime.
 
-**Full-monitor recording.** Pick a display and record an MP4. Choose your resolution, frame rate, and encoder, with separate controls for system audio and your microphone.
+**Display and game recording.** Record the selected display or target a game with OBS Game Capture. Choose your resolution, frame rate, and encoder, with separate controls for system audio and your microphone.
 
 **Files that sort themselves.** Give screenshots, clips, and recordings their own folders. Add date folders or a filename template, and preview the resulting path before saving.
 
@@ -77,7 +81,7 @@ Run **`KumaCaptureUpdater.exe`** from GitHub Releases or the Start menu. It look
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>6</kbd> | Arm or stop replay |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>7</kbd> | Start or stop recording |
 
-To change a shortcut, click its binding under **Settings → Hotkeys**, then press a key or a combination like **Ctrl+Shift+K**. Clips and recordings always include the whole selected monitor, including anything visible when switching apps. The microphone starts off.
+To change a shortcut, click its binding under **Settings → Hotkeys**, then press a key or a combination like **Ctrl+Shift+K**. In Display Capture, video includes the whole selected monitor, including anything visible when switching apps. The microphone starts off.
 
 ## Build from source
 

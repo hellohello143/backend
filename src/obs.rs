@@ -1,6 +1,6 @@
 use crate::{
     capture,
-    model::{self, Kind, Media, NameInfo, Settings},
+    model::{self, Kind, Media, NameInfo, Settings, VideoCaptureMode},
 };
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -158,6 +158,7 @@ pub struct Engine {
     socket: Option<Socket>,
     display: Option<capture::Display>,
     dimensions: String,
+    game_capture: bool,
     recording_program: String,
     pub replay: Option<Instant>,
     pub recording: Option<Instant>,
@@ -174,6 +175,7 @@ impl Engine {
             socket: None,
             display: None,
             dimensions: String::new(),
+            game_capture: false,
             recording_program: String::new(),
             replay: None,
             recording: None,
@@ -187,8 +189,17 @@ impl Engine {
         self.socket.as_mut().context("Capture engine is stopped.")
     }
 
-    fn start_engine(&mut self, settings: &Settings, encoder: &str) -> Result<()> {
+    fn start_engine(
+        &mut self,
+        settings: &Settings,
+        encoder: &str,
+        game_window: Option<&str>,
+    ) -> Result<()> {
         self.stop();
+        // Device inspection has no target game and only reads OBS audio device lists.
+        // Actual Game mode output is guarded in start_output, so this None path is display-only.
+        let game_capture =
+            settings.video_capture_mode == VideoCaptureMode::Game && game_window.is_some();
         let display = capture::selected_display(&settings.monitor)?;
         let bin = self.root.join("obs/bin/64bit");
         let exe = bin.join("obs64.exe");
@@ -299,20 +310,39 @@ impl Engine {
 
         let socket = self.socket()?;
         socket.call("CreateScene", json!({"sceneName":SCENE}))?;
-        let item = socket.call("CreateInput", json!({"sceneName":SCENE,"inputName":INPUT,"inputKind":"monitor_capture","inputSettings":{"monitor_id":display.id,"capture_cursor":settings.cursor,"force_sdr":true}}))?;
-        let monitors = socket.call(
-            "GetInputPropertiesListPropertyItems",
-            json!({"inputName":INPUT,"propertyName":"monitor_id"}),
-        )?;
-        let available = monitors["propertyItems"].as_array().is_some_and(|items| {
-            items.iter().any(|m| {
-                m["itemValue"]
-                    .as_str()
-                    .is_some_and(|id| id.eq_ignore_ascii_case(&display.id))
-            })
-        });
-        if !available {
-            bail!("OBS could not match the selected monitor.");
+        let (input_kind, input_settings) = if game_capture {
+            (
+                "game_capture",
+                json!({
+                    "capture_mode":"window",
+                    "window":game_window.context("No game window is available for Game Capture.")?,
+                    // OBS window_priority enum: CLASS=0, TITLE=1, EXE=2.
+                    "priority":2,
+                    "capture_cursor":settings.cursor
+                }),
+            )
+        } else {
+            (
+                "monitor_capture",
+                json!({"monitor_id":display.id,"capture_cursor":settings.cursor,"force_sdr":true}),
+            )
+        };
+        let item = socket.call("CreateInput", json!({"sceneName":SCENE,"inputName":INPUT,"inputKind":input_kind,"inputSettings":input_settings}))?;
+        if !game_capture {
+            let monitors = socket.call(
+                "GetInputPropertiesListPropertyItems",
+                json!({"inputName":INPUT,"propertyName":"monitor_id"}),
+            )?;
+            let available = monitors["propertyItems"].as_array().is_some_and(|items| {
+                items.iter().any(|m| {
+                    m["itemValue"]
+                        .as_str()
+                        .is_some_and(|id| id.eq_ignore_ascii_case(&display.id))
+                })
+            });
+            if !available {
+                bail!("OBS could not match the selected monitor.");
+            }
         }
         socket.call("SetSceneItemTransform", json!({"sceneName":SCENE,"sceneItemId":item["sceneItemId"],"sceneItemTransform":{"positionX":0.0,"positionY":0.0,"alignment":5,"boundsType":"OBS_BOUNDS_SCALE_INNER","boundsWidth":out_w,"boundsHeight":out_h,"boundsAlignment":0}}))?;
         let mut devices = [Vec::new(), Vec::new()];
@@ -367,11 +397,12 @@ impl Engine {
         socket.call("SetCurrentProgramScene", json!({"sceneName":SCENE}))?;
         self.devices = devices;
         self.display = Some(display);
+        self.game_capture = game_capture;
         self.dimensions = format!("{out_w}x{out_h}");
         Ok(())
     }
 
-    pub fn toggle_replay(&mut self, settings: &Settings) -> Result<()> {
+    pub fn toggle_replay(&mut self, settings: &Settings, game_window: Option<&str>) -> Result<()> {
         if self.replay.is_some() {
             self.socket()?.call_simple("StopReplayBuffer")?;
             self.replay = None;
@@ -380,7 +411,7 @@ impl Engine {
             }
             return Ok(());
         }
-        self.start_output(settings, "StartReplayBuffer")?;
+        self.start_output(settings, "StartReplayBuffer", game_window)?;
         self.replay = Some(Instant::now());
         Ok(())
     }
@@ -389,11 +420,12 @@ impl Engine {
         &mut self,
         settings: &Settings,
         program: String,
+        game_window: Option<&str>,
     ) -> Result<Option<Media>> {
         if let Some(started) = self.recording {
             return self.finish_recording(settings, started).map(Some);
         }
-        self.start_output(settings, "StartRecord")?;
+        self.start_output(settings, "StartRecord", game_window)?;
         self.recording = Some(Instant::now());
         self.recording_program = program;
         Ok(None)
@@ -431,9 +463,17 @@ impl Engine {
         result
     }
 
-    fn start_output(&mut self, settings: &Settings, request: &str) -> Result<()> {
+    fn start_output(
+        &mut self,
+        settings: &Settings,
+        request: &str,
+        game_window: Option<&str>,
+    ) -> Result<()> {
         if self.socket.is_some() && (self.recording.is_some() || self.replay.is_some()) {
             return self.socket()?.call_simple(request).map(|_| ());
+        }
+        if settings.video_capture_mode == VideoCaptureMode::Game && game_window.is_none() {
+            bail!("No game window is available for Game Capture. Focus the game and try again.");
         }
         let encoder = if settings.bitrate > 0 {
             "x264"
@@ -441,7 +481,7 @@ impl Engine {
             settings.encoder.as_str()
         };
         let result = self
-            .start_engine(settings, encoder)
+            .start_engine(settings, encoder, game_window)
             .and_then(|()| self.socket()?.call_simple(request).map(|_| ()));
         if let Err(error) = result {
             self.stop();
@@ -449,7 +489,7 @@ impl Engine {
                 return Err(error);
             }
             let fallback = self
-                .start_engine(settings, "x264")
+                .start_engine(settings, "x264", game_window)
                 .and_then(|()| self.socket()?.call_simple(request).map(|_| ()));
             if let Err(error) = fallback {
                 self.stop();
@@ -462,7 +502,7 @@ impl Engine {
 
     pub fn inspect_devices(&mut self, settings: &Settings) -> Result<()> {
         if self.socket.is_none() {
-            let result = self.start_engine(settings, "x264");
+            let result = self.start_engine(settings, "x264", None);
             if result.is_err() {
                 self.stop();
             }
@@ -476,6 +516,19 @@ impl Engine {
         let started = self.replay.context("Arm instant replay first.")?;
         if started.elapsed().as_secs() < 2 {
             bail!("The replay buffer is still filling. Try again in a moment.");
+        }
+        let status = self.socket()?.call_simple("GetReplayBufferStatus")?;
+        if !status["outputActive"]
+            .as_bool()
+            .context("OBS did not report if replay was active.")?
+        {
+            self.replay = None;
+            if self.recording.is_none() {
+                self.stop();
+            }
+            bail!(
+                "The replay buffer stopped before the clip could be saved. Arm it again and retry."
+            );
         }
         let socket = self.socket()?;
         socket
@@ -553,21 +606,23 @@ impl Engine {
                 bail!("The OBS capture runtime stopped.");
             }
         }
-        if let Some(display) = &self.display {
-            if !capture::displays().iter().any(|item| item.id == display.id) {
-                let media = if let Some(started) = self.recording {
-                    Some(self.finish_recording(settings, started)?)
-                } else {
-                    None
-                };
-                self.stop();
-                return if media.is_some() {
-                    Ok(media)
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Capture paused because the selected monitor disconnected."
-                    ))
-                };
+        if !self.game_capture {
+            if let Some(display) = &self.display {
+                if !capture::displays().iter().any(|item| item.id == display.id) {
+                    let media = if let Some(started) = self.recording {
+                        Some(self.finish_recording(settings, started)?)
+                    } else {
+                        None
+                    };
+                    self.stop();
+                    return if media.is_some() {
+                        Ok(media)
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "Capture paused because the selected monitor disconnected."
+                        ))
+                    };
+                }
             }
         }
         let mut meters = self.meters;
@@ -618,6 +673,7 @@ impl Engine {
             let _ = child.wait();
         }
         self.display = None;
+        self.game_capture = false;
         self.replay = None;
         self.recording = None;
         self.recording_program.clear();

@@ -1,7 +1,7 @@
 // The desktop-DC capture workflow is adapted from ShareX.ScreenCaptureLib/Screenshot.cs.
 // ShareX copyright (c) 2007–2026 ShareX Team. GPL-3.0-or-later.
 use crate::model::{self, Kind, Media, NameInfo, Settings};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Local;
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use std::borrow::Cow;
@@ -144,7 +144,7 @@ fn window_pid(window: HWND) -> u32 {
     pid
 }
 
-fn executable_name(pid: u32) -> Option<String> {
+fn executable_file(pid: u32) -> Option<String> {
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
         return None;
@@ -157,7 +157,42 @@ fn executable_name(pid: u32) -> Option<String> {
         return None;
     }
     let path = String::from_utf16_lossy(&buffer[..length as usize]);
-    Path::new(&path).file_stem()?.to_str().map(str::to_owned)
+    Path::new(&path).file_name()?.to_str().map(str::to_owned)
+}
+
+fn executable_name(pid: u32) -> Option<String> {
+    let file = executable_file(pid)?;
+    Path::new(&file).file_stem()?.to_str().map(str::to_owned)
+}
+
+pub fn game_window(window: HWND) -> Result<String> {
+    let focus_message = "Focus the game before arming Game Capture.";
+    if window.is_null() || window == unsafe { GetShellWindow() } {
+        bail!("{focus_message}");
+    }
+    let executable = executable_file(window_pid(window)).context(focus_message)?;
+    if ["LeagueClient.exe", "LeagueClientUx.exe", "RiotClientUx.exe"]
+        .iter()
+        .any(|launcher| executable.eq_ignore_ascii_case(launcher))
+    {
+        bail!("Open a League match or Practice Tool, focus the game, then arm replay or start recording.");
+    }
+    let title_length = unsafe { GetWindowTextLengthW(window) };
+    if title_length == 0 || executable.eq_ignore_ascii_case("explorer.exe") {
+        bail!("{focus_message}");
+    }
+    let mut title = vec![0u16; title_length as usize + 1];
+    let mut class = [0u16; 256];
+    if unsafe { GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32) } == 0
+        || unsafe { GetClassNameW(window, class.as_mut_ptr(), class.len() as i32) } == 0
+    {
+        bail!("{focus_message}");
+    }
+    Ok(model::obs_window_selector(
+        &wide(&title),
+        &wide(&class),
+        &executable,
+    ))
 }
 
 pub fn program_name(window: HWND) -> String {

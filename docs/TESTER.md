@@ -1,4 +1,4 @@
-# Kuma Capture 0.4.1 Windows test checklist
+# Kuma Capture 0.4.2 Windows test checklist
 
 1. Start on Windows 11 x64. Run `KumaCaptureSetup.exe`, then open Kuma Capture from Start. Alternatively, extract the whole portable ZIP to a writable folder. The portable build requires the Microsoft Visual C++ x64 runtime if it is absent on the PC.
 2. Open region capture from the tray or a hotkey with Kuma hidden. Use ShareX’s crosshair, selection, window detection and annotation toolbar. Reproduce the old flashing case, drag across mixed-DPI monitors, then check Escape, cursor inclusion, and capture from the three other screenshot shortcuts.
@@ -7,7 +7,7 @@
 5. Install 0.3.0, then run the new standalone updater. Quit the old version when prompted and confirm setup upgrades the previous directory, including a custom directory, with settings and history intact. Run the updater again and verify it reports up to date. On a newer installed app, verify a later update requests a graceful shutdown and reopens Kuma when finished.
 6. Select a display and arm replay. Save one early clip and two consecutive clips after the buffer fills. Confirm that the buffer stays armed, replay files play, and only the selected display is recorded. Trigger the same hotkey while a fullscreen app has focus.
 7. Test manual recording alongside replay. Check video resolution and audio sync in the output. Toggle the mic and desktop audio independently and confirm the meter follows the selected device. Try an unavailable hardware encoder and check that software fallback succeeds.
-8. Disconnect the selected display with replay armed. Confirm that capture pauses and Kuma displays an interruption. Test reconnecting, changing monitors and approving a replay reset.
+8. In Display Capture, disconnect the selected display with replay armed. Confirm that capture pauses and Kuma displays an interruption. Test reconnecting, changing monitors and approving a replay reset.
 9. Check Settings sidebar keyboard navigation, Advanced disclosure, file path preview, date folders, duplicate filenames, hotkey conflicts, and preference persistence after restart. Test title bar drag, double-click maximize, resize edges and the Windows Snap Layout hover menu.
 10. Save while offline. For each provider you have a test account for, configure a test destination, upload manually and automatically, then force a failure and retry. Confirm the local file survives and the remote file is private according to the provider's permissions.
 11. Test closing to the tray, restoring, and quitting. Use an empty test account and nonsensitive footage. For a failure, capture the Kuma status text, Windows version, GPU/driver, reproduction steps, and relevant OBS log excerpts after removing paths or secrets. OBS logs are under `obs/config/obs-studio/logs` beside Kuma Capture.
@@ -36,5 +36,12 @@ Enable **Settings → Screenshots → Advanced → Log screenshot diagnostics**.
 | True exclusive fullscreen | Repeat with a title that supports exclusive mode. Record the Fullscreen Optimizations setting. | Whether opening the selector changes focus and whether the original frame is in the output |
 
 If the shortcut produces no capture, compare the tray action and check for `hotkey_received`. A saved file with bad pixels points to the frame or display path. Compare `frame_requested`, `frame_acquired`, `overlay_requested`, `overlay_visible` when detected, and `file_saved`. The log contains only stages and timings. It cannot tell whether the acquired image was correct. Disable diagnostics when done.
+
+## Borderless League and OBS Game Capture
+
+1. With **Display Capture**, select the monitor with League. Verify both the desktop replay and a replay in a moving borderless Practice Tool session. Compare the hotkey with **Save replay** from the tray and note whether each action creates a file.
+2. Stop replay, then set **Settings → Clips & Recording → Video source → OBS Game Capture**. Focus the actual match and use the arm hotkey (default `Ctrl+Shift+6`). Wait for the buffer to fill, save a clip while the game is focused (default `Ctrl+Shift+5`), and play it back. Record whether the image moves, is black, or is frozen, and whether audio plays.
+3. In Game Capture, start a recording while replay is armed, then stop each output independently. Repeat with recording started first. Both should use the original game target until both are stopped. Switch back to Display Capture and verify it still captures the selected display.
+4. Try arming from the League launcher and check the match/Practice Tool message. If Game Capture saves a black clip even in a match, compare a regular recording, play the output in two players, and check the OBS log under `obs/config/obs-studio/logs` beside Kuma Capture. Include Windows version, GPU/driver, monitor setup, the exact Kuma message, and sanitized OBS log details when reporting the failure.
 
 The binaries are unsigned prereleases. CI checks the Windows build, capture bridge loading, and installer contents. Visual previews are rendered against sample state. Interactive Windows fullscreen, mixed-DPI, and upgrade checks remain hands-on tests.
